@@ -65,6 +65,7 @@ class ConversationMode(str, enum.Enum):
 
 
 def pg_enum(enum_cls: type[enum.Enum], name: str) -> Enum:
+    """告诉 SQLAlchemy 用 Postgres 里已有的枚举类型，不要重复创建。"""
     return Enum(
         enum_cls,
         name=name,

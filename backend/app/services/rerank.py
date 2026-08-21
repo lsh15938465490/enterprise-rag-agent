@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 async def rerank(query: str, candidates: list[tuple[object, str, float]], top_n: int = 8) -> list[tuple[object, float]]:
+    """对候选段落打「和问题有多相关」的分，只留最相关的几条给大模型。"""
     if not candidates:
         return []
     try:

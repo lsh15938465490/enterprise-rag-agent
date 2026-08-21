@@ -76,6 +76,7 @@ const dialog = ref(false);
 const form = reactive({ username: "", email: "", password: "", role: "member" });
 
 async function load() {
+  // 管理员用户列表，支持关键字
   const { data } = await http.get("/users", { params: { keyword: keyword.value || undefined, page_size: 50 } });
   items.value = data.data.items || [];
 }

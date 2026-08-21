@@ -10,10 +10,12 @@ from app.db.models import KnowledgeBase, KnowledgeBaseAcl, User, UserRole
 
 
 def is_tenant_admin(user: User) -> bool:
+    """租户管理员和超级管理员：本租户知识库默认都能看。"""
     return user.role in {UserRole.super_admin, UserRole.tenant_admin}
 
 
 async def get_kb(db: AsyncSession, kb_id: UUID, tenant_id: UUID) -> KnowledgeBase:
+    """按 id 取知识库，必须属于当前租户，防止跨租户猜 UUID。"""
     kb = await db.scalar(
         select(KnowledgeBase).where(KnowledgeBase.id == kb_id, KnowledgeBase.tenant_id == tenant_id)
     )
@@ -23,6 +25,7 @@ async def get_kb(db: AsyncSession, kb_id: UUID, tenant_id: UUID) -> KnowledgeBas
 
 
 async def user_can_read_kb(db: AsyncSession, user: User, kb: KnowledgeBase) -> bool:
+    """能不能用这个库去问答/看文档。"""
     if kb.tenant_id != user.tenant_id:
         return False
     if is_tenant_admin(user) or kb.created_by == user.id:
@@ -38,6 +41,7 @@ async def user_can_read_kb(db: AsyncSession, user: User, kb: KnowledgeBase) -> b
 
 
 async def user_can_write_kb(db: AsyncSession, user: User, kb: KnowledgeBase) -> bool:
+    """能不能上传/改 ACL。普通成员即使能读也不能写。"""
     if not await user_can_read_kb(db, user, kb):
         return False
     if is_tenant_admin(user) or kb.created_by == user.id:
@@ -53,6 +57,7 @@ async def user_can_write_kb(db: AsyncSession, user: User, kb: KnowledgeBase) -> 
 
 
 async def readable_kb_ids(db: AsyncSession, user: User) -> list[UUID]:
+    """知识库列表页用：一次性算出「我能看见哪些库」。"""
     if is_tenant_admin(user):
         rows = (
             await db.scalars(
@@ -85,11 +90,13 @@ async def readable_kb_ids(db: AsyncSession, user: User) -> list[UUID]:
 
 
 async def require_read(db: AsyncSession, user: User, kb: KnowledgeBase) -> None:
+    """接口里没权限就 403。"""
     if not await user_can_read_kb(db, user, kb):
         raise AppError(40003, "无权限", 403)
 
 
 async def require_read_many(db: AsyncSession, user: User, kbs: list[KnowledgeBase]) -> None:
+    """新建会话时一次检查多个库，避免每个库查一遍 ACL。"""
     if not kbs:
         raise AppError(40022, "至少选择一个知识库", 422)
     if is_tenant_admin(user):
@@ -112,6 +119,7 @@ async def require_read_many(db: AsyncSession, user: User, kbs: list[KnowledgeBas
 
 
 async def require_write(db: AsyncSession, user: User, kb: KnowledgeBase) -> None:
+    """写操作入口。成员角色直接拒绝。"""
     if user.role == UserRole.member:
         raise AppError(40003, "无权限", 403)
     if not await user_can_write_kb(db, user, kb):

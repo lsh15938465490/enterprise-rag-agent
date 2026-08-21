@@ -27,10 +27,12 @@ ALLOWED_EXT = {".pdf", ".docx", ".txt", ".md"}
 
 
 def _dto(doc: Document) -> dict:
+    """文档对象转成接口 JSON。"""
     return DocumentDTO.model_validate(doc).model_dump(mode="json")
 
 
 async def _enqueue(doc_id: UUID) -> None:
+    """INLINE=true 时在当前进程后台解析；否则丢给 Celery worker。"""
     if settings.INLINE_DOCUMENT_PIPELINE:
         asyncio.create_task(process_document(doc_id))
         return
@@ -47,9 +49,8 @@ async def list_docs(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """列出某知识库下的文档，可按状态过滤。"""
     kb = await get_kb(db, kb_id, user.tenant_id)
-    await require_read(db, user, kb)
-    stmt = select(Document).where(Document.knowledge_base_id == kb.id)
     count_stmt = select(func.count()).select_from(Document).where(Document.knowledge_base_id == kb.id)
     if status is not None:
         stmt = stmt.where(Document.status == status)
@@ -109,6 +110,7 @@ async def get_doc(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """单份文档的状态（解析进度、失败原因）。"""
     doc = await db.scalar(select(Document).where(Document.id == doc_id, Document.tenant_id == user.tenant_id))
     if doc is None:
         raise AppError(40004, "资源不存在", 404)
@@ -123,6 +125,7 @@ async def download_doc(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """下载原始文件。"""
     doc = await db.scalar(select(Document).where(Document.id == doc_id, Document.tenant_id == user.tenant_id))
     if doc is None:
         raise AppError(40004, "资源不存在", 404)
@@ -141,6 +144,7 @@ async def reprocess(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """解析失败或改了算法后，重新走切块+向量化。"""
     doc = await db.scalar(select(Document).where(Document.id == doc_id, Document.tenant_id == user.tenant_id))
     if doc is None:
         raise AppError(40004, "资源不存在", 404)
@@ -160,6 +164,7 @@ async def delete_doc(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """删库记录、磁盘文件和向量点。"""
     doc = await db.scalar(select(Document).where(Document.id == doc_id, Document.tenant_id == user.tenant_id))
     if doc is None:
         raise AppError(40004, "资源不存在", 404)

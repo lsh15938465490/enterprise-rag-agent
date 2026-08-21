@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def _token_payload(user: User) -> dict:
+    """登录成功后同时签发短令牌（access）和长令牌（refresh），并带上用户资料。"""
     access, _ = create_token(user.id, user.tenant_id, "access")
     refresh, _ = create_token(user.id, user.tenant_id, "refresh")
     return TokenOut(
@@ -35,6 +36,7 @@ def _token_payload(user: User) -> dict:
 
 @router.post("/login")
 async def login(request: Request, body: LoginIn, db: AsyncSession = Depends(get_db)):
+    """校验租户 + 用户名 + 密码。失败时故意返回同一句话，避免被人试出「用户是否存在」。"""
     tenant = await db.scalar(select(Tenant).where(Tenant.slug == body.tenant_slug, Tenant.is_active.is_(True)))
     if tenant is None:
         raise AppError(40001, "用户名或密码错误", 401)
@@ -48,6 +50,7 @@ async def login(request: Request, body: LoginIn, db: AsyncSession = Depends(get_
 
 @router.post("/refresh")
 async def refresh(request: Request, body: RefreshIn, db: AsyncSession = Depends(get_db)):
+    """用 refresh 换一对新令牌。已登出（黑名单）或伪造的 token 一律当认证失败。"""
     try:
         payload = decode_token(body.refresh_token)
     except jwt.PyJWTError:
@@ -69,6 +72,7 @@ async def refresh(request: Request, body: RefreshIn, db: AsyncSession = Depends(
 
 @router.post("/logout")
 async def logout(request: Request, body: RefreshIn):
+    """把 refresh 的 jti 拉黑。token 本身无效也返回成功，避免重复点退出时报错。"""
     try:
         payload = decode_token(body.refresh_token)
         jti = str(payload.get("jti") or "")
@@ -81,4 +85,5 @@ async def logout(request: Request, body: RefreshIn):
 
 @router.get("/me")
 async def me(request: Request, user: User = Depends(get_current_user)):
+    """返回当前登录人信息，给前端顶栏显示用户名、判断是否管理员。"""
     return ok(request, UserDTO.model_validate(user).model_dump(mode="json"))

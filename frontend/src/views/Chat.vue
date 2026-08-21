@@ -97,14 +97,17 @@ const currentId = computed(() => (route.params.conversationId as string) || "");
 const currentConv = computed(() => convs.value.find((c) => c.id === currentId.value));
 
 async function loadConvs() {
+  // 刷新左侧会话列表
   const { data } = await http.get("/conversations");
   convs.value = data.data.items || [];
 }
 async function loadKbs() {
+  // 新建会话时要选的知识库下拉框
   const { data } = await http.get("/knowledge-bases");
   kbs.value = data.data || [];
 }
 async function loadMessages(id: string) {
+  // 打开某个会话时拉历史消息
   const { data } = await http.get(`/conversations/${id}`);
   messages.value = (data.data.messages || []).map((m: Msg) => ({
     ...m,
@@ -114,6 +117,7 @@ async function loadMessages(id: string) {
 }
 
 async function createConv() {
+  // 必须先勾选知识库，否则检索没有范围
   if (!createForm.knowledge_base_ids.length) {
     ElMessage.warning("请至少选择一个知识库");
     return;
@@ -124,6 +128,7 @@ async function createConv() {
 }
 
 async function send() {
+  // 用 fetch 读 SSE：axios 不好处理逐字流
   if (!currentId.value || !question.value.trim()) return;
   sending.value = true;
   const q = question.value.trim();

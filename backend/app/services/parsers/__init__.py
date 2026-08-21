@@ -12,6 +12,7 @@ class ParsedBlock:
 
 
 def parse_file(path: Path, content_type: str, filename: str) -> list[ParsedBlock]:
+    """根据后缀选择解析器。"""
     suffix = path.suffix.lower()
     if suffix == ".pdf" or "pdf" in content_type:
         return _parse_pdf(path)
@@ -21,6 +22,7 @@ def parse_file(path: Path, content_type: str, filename: str) -> list[ParsedBlock
 
 
 def _parse_pdf(path: Path) -> list[ParsedBlock]:
+    """一页一段。扫描件没有文字层会 EMPTY_TEXT。"""
     from pypdf import PdfReader
 
     reader = PdfReader(str(path))
@@ -35,6 +37,7 @@ def _parse_pdf(path: Path) -> list[ParsedBlock]:
 
 
 def _parse_docx(path: Path) -> list[ParsedBlock]:
+    """按段落读取。标题样式会记到 heading。表格内容当前不读。"""
     import docx
 
     document = docx.Document(str(path))
@@ -61,6 +64,7 @@ def _parse_docx(path: Path) -> list[ParsedBlock]:
 
 
 def _parse_text(path: Path) -> list[ParsedBlock]:
+    """txt/md：先试 utf-8，再试 gbk（国内常见编码）。"""
     raw = path.read_bytes()
     text = None
     for enc in ("utf-8", "gbk"):

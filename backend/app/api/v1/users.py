@@ -20,6 +20,7 @@ PASSWORD_RE = re.compile(r"^(?=.*[A-Za-z])(?=.*\d).{8,}$")
 
 
 def _check_password(password: str) -> None:
+    """创建/改密时再拦一层：至少 8 位，且字母、数字都要有。"""
     if not PASSWORD_RE.match(password):
         raise AppError(40022, "密码至少 8 位且包含字母和数字", 422)
 
@@ -33,6 +34,7 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_roles(UserRole.tenant_admin)),
 ):
+    """分页列出本租户用户，可用用户名或邮箱模糊搜索。"""
     stmt = select(User).where(User.tenant_id == admin.tenant_id)
     count_stmt = select(func.count()).select_from(User).where(User.tenant_id == admin.tenant_id)
     if keyword:
@@ -55,6 +57,7 @@ async def create_user(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_roles(UserRole.tenant_admin)),
 ):
+    """新建账号。不能越权创建超级管理员；用户名/邮箱在本租户内不能重复。"""
     _check_password(body.password)
     if body.role == "super_admin" and admin.role != UserRole.super_admin:
         raise AppError(40003, "无权限", 403)
@@ -88,6 +91,7 @@ async def patch_user(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_roles(UserRole.tenant_admin)),
 ):
+    """改密码、启用/禁用、改角色。只能改本租户的人。"""
     user = await db.scalar(select(User).where(User.id == user_id, User.tenant_id == admin.tenant_id))
     if user is None:
         raise AppError(40004, "资源不存在", 404)

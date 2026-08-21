@@ -6,6 +6,7 @@ from app.core.config import settings
 
 
 async def get_weather(city: str) -> str:
+    """查城市天气。没 Key、超时、对方报错都返回中文说明。"""
     if not settings.WEATHER_API_KEY:
         return "服务未配置"
     url = "https://api.openweathermap.org/data/2.5/weather"

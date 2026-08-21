@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def _hash_vec(text: str) -> list[float]:
+    """没有真模型时：用哈希凑向量。同一段文字每次结果相同，但「意思近」对不上。"""
     digest = hashlib.sha256(text.encode("utf-8")).digest()
     raw: list[float] = []
     seed = digest
@@ -30,6 +31,7 @@ class EmbeddingClient:
         self.backend = settings.EMBEDDING_BACKEND
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """一批文本 → 一批向量。真模型失败就降级哈希，保证上传流程能走完。"""
         if self.backend == "sentence_transformers":
             try:
                 return await self._st(texts)
@@ -39,6 +41,7 @@ class EmbeddingClient:
         return [_hash_vec(t) for t in texts]
 
     async def _st(self, texts: list[str]) -> list[list[float]]:
+        """调用 BGE 等 sentence-transformers 模型。"""
         from sentence_transformers import SentenceTransformer
 
         model = SentenceTransformer(settings.EMBEDDING_MODEL_NAME)

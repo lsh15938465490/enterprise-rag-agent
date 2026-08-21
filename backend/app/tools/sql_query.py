@@ -8,6 +8,7 @@ FORBIDDEN = re.compile(r"\b(pg_|information_schema|pg_catalog)\b", re.I)
 
 
 def assert_readonly_select(sql: str) -> str:
+    """通不过就抛 ValueError，调用方把它变成给模型看的拒绝原因。"""
     cleaned = sql.strip()
     if not cleaned:
         raise ValueError("SQL 为空")

@@ -15,5 +15,6 @@ SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """FastAPI Depends 用：一个请求一个会话，离开接口自动关闭。"""
     async with SessionLocal() as session:
         yield session

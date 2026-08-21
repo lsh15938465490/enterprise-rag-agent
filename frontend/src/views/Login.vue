@@ -35,6 +35,7 @@ const form = reactive({
 });
 
 async function onSubmit() {
+  // 提交登录表单
   if (!form.tenant_slug || !form.username || !form.password) {
     ElMessage.warning("请填写租户、用户名和密码");
     return;

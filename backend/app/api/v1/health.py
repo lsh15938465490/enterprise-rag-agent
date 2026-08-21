@@ -17,6 +17,7 @@ router = APIRouter(tags=["health"])
 
 
 async def _check_postgres() -> bool:
+    """试执行 SELECT 1，能通就认为 Postgres 活着。"""
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
@@ -27,6 +28,7 @@ async def _check_postgres() -> bool:
 
 
 async def _check_redis() -> bool:
+    """对 Redis 发 PING。"""
     client = Redis.from_url(settings.REDIS_URL, socket_connect_timeout=2)
     try:
         return bool(await client.ping())
@@ -38,6 +40,7 @@ async def _check_redis() -> bool:
 
 
 async def _check_qdrant() -> bool:
+    """请求 Qdrant 的 /readyz。"""
     url = settings.QDRANT_URL.rstrip("/") + "/readyz"
     headers = {}
     if settings.QDRANT_API_KEY:
@@ -53,6 +56,7 @@ async def _check_qdrant() -> bool:
 
 @router.get("/health")
 async def health(request: Request) -> dict:
+    """三个依赖全好才是 ok，否则 degraded（服务还能开，但检索/登录可能出问题）。"""
     postgres = await _check_postgres()
     redis_ok = await _check_redis()
     qdrant = await _check_qdrant()

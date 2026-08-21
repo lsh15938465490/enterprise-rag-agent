@@ -20,11 +20,13 @@ router = APIRouter(prefix="/knowledge-bases", tags=["knowledge-bases"])
 
 
 def _coll_name(slug: str, kb_id: UUID) -> str:
+    """Qdrant 集合名：租户 slug + 知识库 id，避免不同公司撞名。"""
     return f"kb_{slug}_{kb_id.hex}"
 
 
 @router.get("")
 async def list_kbs(request: Request, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    """只返回当前用户有权读的知识库。"""
     ids = await readable_kb_ids(db, user)
     if not ids:
         return ok(request, [])
@@ -43,6 +45,7 @@ async def create_kb(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles(UserRole.kb_editor, UserRole.tenant_admin)),
 ):
+    """新建知识库，并在 Qdrant 建同名向量集合。名称冲突返回 409。"""
     tenant = await db.scalar(select(Tenant).where(Tenant.id == user.tenant_id))
     if tenant is None:
         raise AppError(40004, "资源不存在", 404)
@@ -75,6 +78,7 @@ async def get_one(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """知识库详情，需要读权限。"""
     kb = await get_kb(db, kb_id, user.tenant_id)
     await require_read(db, user, kb)
     return ok(request, KnowledgeBaseDTO.model_validate(kb).model_dump(mode="json"))
@@ -88,6 +92,7 @@ async def patch_kb(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """改名称、描述、启用状态。"""
     kb = await get_kb(db, kb_id, user.tenant_id)
     await require_write(db, user, kb)
     if body.name is not None:
@@ -108,6 +113,7 @@ async def delete_kb(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """软删除：只停用，不物理删文件。"""
     kb = await get_kb(db, kb_id, user.tenant_id)
     await require_write(db, user, kb)
     kb.is_active = False
@@ -122,6 +128,7 @@ async def get_acl(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """查看谁被授权读写这个库。"""
     kb = await get_kb(db, kb_id, user.tenant_id)
     await require_write(db, user, kb)
     rows = (await db.scalars(select(KnowledgeBaseAcl).where(KnowledgeBaseAcl.knowledge_base_id == kb.id))).all()
@@ -142,6 +149,7 @@ async def put_acl(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require_roles(UserRole.kb_editor, UserRole.tenant_admin)),
 ):
+    """整表替换授权名单；user_id 必须是本租户用户。"""
     kb = await get_kb(db, kb_id, user.tenant_id)
     await require_write(db, user, kb)
     user_ids = [item.user_id for item in body.items]

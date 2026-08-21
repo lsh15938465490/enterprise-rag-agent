@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 async def process_document(document_id: UUID) -> None:
+    """解析一篇文档的全过程。任一步失败会把 status 设为 failed 并记下原因。"""
     async with SessionLocal() as db:
         doc = await db.scalar(select(Document).where(Document.id == document_id))
         if doc is None:
@@ -72,6 +73,7 @@ async def process_document(document_id: UUID) -> None:
 
 
 async def _embed(db: AsyncSession, doc: Document, kb: KnowledgeBase, chunks: list[Chunk]) -> None:
+    """给所有切块算向量并 upsert 到 Qdrant，成功则 ready。"""
     doc.status = DocStatus.embedding
     await db.commit()
     try:

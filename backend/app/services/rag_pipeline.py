@@ -29,10 +29,12 @@ class RetrievedChunk:
 
 
 def _escape_like(term: str) -> str:
+    """ILIKE 里 % _ 有特殊含义，先转义，防止用户输入把匹配搞乱。"""
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _tsquery_string(query: str) -> str | None:
+    """把分词结果拼成 Postgres tsquery：词1 | 词2（或关系，提高命中）。"""
     lexemes = query_lexemes(query)
     if not lexemes:
         return None
@@ -53,6 +55,7 @@ async def _ilike_search(
     query: str,
     top_k: int,
 ) -> list[tuple[UUID, float]]:
+    """全文检索没命中时，用模糊匹配再找一遍。"""
     terms = query_lexemes(query) or [query.strip()]
     likes = [f"%{_escape_like(term)}%" for term in terms if term]
     if not likes:
@@ -81,6 +84,7 @@ async def keyword_search(
     query: str,
     top_k: int = 40,
 ) -> list[tuple[UUID, float]]:
+    """关键词检索：优先 tsvector，失败或空结果走 ILIKE。"""
     if not kb_ids:
         return []
     tsq_text = _tsquery_string(query)
@@ -113,6 +117,7 @@ async def retrieve(
     kb_ids: list[UUID],
     query: str,
 ) -> list[RetrievedChunk]:
+    """完整检索：向量 + 关键词 → 融合 → 精排，返回带正文的切块。"""
     embedder = EmbeddingClient()
     qvec = (await embedder.embed_texts([query]))[0]
     collections = (

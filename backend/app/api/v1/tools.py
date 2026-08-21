@@ -12,4 +12,5 @@ router = APIRouter(prefix="/tools", tags=["tools"])
 
 @router.get("")
 async def tools(request: Request, _user: User = Depends(get_current_user)):
+    """必须登录才能看工具列表，避免未登录探测系统能力。"""
     return ok(request, list_tools())

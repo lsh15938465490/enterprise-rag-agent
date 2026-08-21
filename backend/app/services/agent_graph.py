@@ -41,6 +41,7 @@ JSON_RE = re.compile(r"\{.*\}", re.S)
 
 
 def _parse_plan(raw: str) -> dict[str, Any]:
+    """从模型输出里抠 JSON。抠不出来就默认去检索，避免瞎 finish。"""
     text = raw.strip()
     match = JSON_RE.search(text)
     if match:
@@ -60,10 +61,12 @@ def _parse_plan(raw: str) -> dict[str, Any]:
 
 
 def _cfg(config: RunnableConfig) -> dict[str, Any]:
+    """从图的 config 里取出 db、user、kb_ids（节点之间靠这个传数据库会话）。"""
     return (config or {}).get("configurable") or {}
 
 
 async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+    """调度器：问模型下一步 retrieve / execute / finish，到 10 轮强制结束。"""
     iteration = int(state.get("iteration") or 0)
     events = list(state.get("events") or [])
     if iteration >= settings.AGENT_MAX_ITERATIONS:
@@ -111,6 +114,7 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict[str
 
 
 async def retrieve_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+    """检索 Agent：调用 RAG，把片段写进 scratchpad 给下一轮看。"""
     cfg = _cfg(config)
     db = cfg["db"]
     user: User = cfg["user"]
@@ -141,6 +145,7 @@ async def retrieve_node(state: AgentState, config: RunnableConfig) -> dict[str, 
 
 
 async def execute_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+    """执行 Agent：只跑白名单工具。"""
     cfg = _cfg(config)
     db = cfg["db"]
     user: User = cfg["user"]
@@ -155,10 +160,12 @@ async def execute_node(state: AgentState, config: RunnableConfig) -> dict[str, A
 
 
 def route_supervisor(state: AgentState) -> str:
+    """根据 supervisor 选出的 action，决定图走向哪个节点。"""
     return state.get("action") or "finish"
 
 
 def build_agent_graph():
+    """组装：supervisor ⇄ retrieve/execute，finish 则结束。"""
     graph = StateGraph(AgentState)
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("retrieve", retrieve_node)
@@ -178,6 +185,7 @@ agent_graph = build_agent_graph()
 
 
 async def run_multi_agent(*, question: str, db, user: User, kb_ids: list[UUID]) -> AgentState:
+    """聊天接口调用的入口：跑完整张图，返回最终答案和引用。"""
     initial: AgentState = {
         "question": question,
         "scratchpad": "",

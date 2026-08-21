@@ -30,6 +30,7 @@ router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 
 async def _kb_ids_map(db: AsyncSession, conv_ids: list[UUID]) -> dict[UUID, list[UUID]]:
+    """一次查出多个会话绑定的知识库，避免列表页 N+1 查询。"""
     if not conv_ids:
         return {}
     rows = (
@@ -44,10 +45,12 @@ async def _kb_ids_map(db: AsyncSession, conv_ids: list[UUID]) -> dict[UUID, list
 
 
 async def _kb_ids(db: AsyncSession, conv_id: UUID) -> list[UUID]:
+    """单个会话绑定了哪些知识库。"""
     return (await _kb_ids_map(db, [conv_id])).get(conv_id, [])
 
 
 def _cite_dict(cite: MessageCitation, chunk: Chunk, doc: Document) -> dict:
+    """把引用整理成前端来源卡片需要的字段。"""
     return {
         "chunk_id": str(chunk.id),
         "document_id": str(doc.id),
@@ -60,6 +63,7 @@ def _cite_dict(cite: MessageCitation, chunk: Chunk, doc: Document) -> dict:
 
 
 async def _citations_map(db: AsyncSession, message_ids: list[UUID]) -> dict[UUID, list[dict]]:
+    """一次 join 查出多条助手消息的引用。"""
     if not message_ids:
         return {}
     rows = (
@@ -78,6 +82,7 @@ async def _citations_map(db: AsyncSession, message_ids: list[UUID]) -> dict[UUID
 
 
 def _msg_dto(msg: Message, citations: list[dict] | None = None) -> dict:
+    """一条消息转成 JSON。"""
     return MessageDTO(
         id=msg.id,
         role=msg.role.value,
@@ -88,6 +93,7 @@ def _msg_dto(msg: Message, citations: list[dict] | None = None) -> dict:
 
 
 async def _citations_for(db: AsyncSession, message_id: UUID) -> list[dict]:
+    """单条消息的引用（非流式聊天收尾会用到）。"""
     return (await _citations_map(db, [message_id])).get(message_id, [])
 
 
@@ -99,6 +105,7 @@ async def list_convs(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """我的会话列表（分页）。"""
     filt = (Conversation.user_id == user.id, Conversation.tenant_id == user.tenant_id)
     total = int(await db.scalar(select(func.count()).select_from(Conversation).where(*filt)) or 0)
     rows = (
@@ -133,6 +140,7 @@ async def create_conv(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """新建会话：知识库必须存在、未停用，且当前用户可读。"""
     kbs = (
         await db.scalars(
             select(KnowledgeBase).where(
@@ -178,6 +186,7 @@ async def get_conv(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """会话详情 + 最近消息（含引用）。只能看自己的。"""
     conv = await db.scalar(
         select(Conversation).where(
             Conversation.id == conv_id, Conversation.user_id == user.id, Conversation.tenant_id == user.tenant_id
@@ -219,6 +228,7 @@ async def list_messages(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """某个会话的消息分页。"""
     conv = await db.scalar(
         select(Conversation).where(
             Conversation.id == conv_id, Conversation.user_id == user.id, Conversation.tenant_id == user.tenant_id
@@ -254,6 +264,7 @@ async def patch_conv(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """改会话标题。"""
     conv = await db.scalar(
         select(Conversation).where(
             Conversation.id == conv_id, Conversation.user_id == user.id, Conversation.tenant_id == user.tenant_id
@@ -286,6 +297,7 @@ async def delete_conv(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """删除整个会话及其消息。"""
     conv = await db.scalar(
         select(Conversation).where(
             Conversation.id == conv_id, Conversation.user_id == user.id, Conversation.tenant_id == user.tenant_id

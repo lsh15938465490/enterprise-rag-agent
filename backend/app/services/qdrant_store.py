@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def _client() -> AsyncQdrantClient:
+    """创建一个 Qdrant 连接。版本差太大会报警，这里关掉严格检查。"""
     kwargs: dict = {"url": settings.QDRANT_URL, "timeout": 10, "check_compatibility": False}
     if settings.QDRANT_API_KEY:
         kwargs["api_key"] = settings.QDRANT_API_KEY
@@ -28,6 +29,7 @@ def _client() -> AsyncQdrantClient:
 
 
 async def ensure_collection(name: str, dim: int = 1024) -> None:
+    """集合不存在就创建。Qdrant 挂了只打日志，不让建库接口 500。"""
     client = _client()
     try:
         exists = await client.collection_exists(name)
@@ -43,6 +45,7 @@ async def ensure_collection(name: str, dim: int = 1024) -> None:
 
 
 async def upsert_points(collection: str, points: list[PointStruct]) -> None:
+    """把切块向量写入集合。失败要抛出，好把文档标成 EMBED_FAILED。"""
     if not points:
         return
     client = _client()
@@ -62,6 +65,7 @@ async def search(
     kb_ids: list[UUID],
     top_k: int = 40,
 ) -> list[tuple[UUID, float]]:
+    """在多个集合里搜相近向量，再用 payload 过滤租户和知识库。"""
     client = _client()
     results: list[tuple[UUID, float]] = []
     try:
@@ -99,6 +103,7 @@ async def search(
 
 
 async def delete_by_document(collection: str, document_id: UUID) -> None:
+    """按 document_id 删掉该文件的全部向量点。"""
     client = _client()
     try:
         await client.delete(

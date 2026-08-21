@@ -20,6 +20,7 @@ TOOL_CATALOG = [
 
 
 def list_tools() -> list[dict[str, Any]]:
+    """给前端/文档展示：哪些工具开着。SQL 工具开关以配置为准。"""
     items = list(TOOL_CATALOG)
     items[-1]["enabled"] = settings.ENABLE_READONLY_SQL_TOOL
     return items
@@ -33,6 +34,7 @@ async def run_tool(
     tenant_id: UUID,
     user: User,
 ) -> str:
+    """按名字分发。未知工具只返回字符串，不抛异常，避免 Agent 整轮崩掉。"""
     if name not in {t["name"] for t in TOOL_CATALOG}:
         return f"未知工具：{name}"
     if name == "get_weather":

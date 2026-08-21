@@ -25,6 +25,7 @@ export const useAuthStore = defineStore("auth", () => {
   );
 
   function setSession(access: string, refresh: string, profile?: AuthUser) {
+    // 同时写入内存和 localStorage，刷新页面还能保持登录
     accessToken.value = access;
     refreshToken.value = refresh;
     localStorage.setItem("access_token", access);
@@ -35,17 +36,20 @@ export const useAuthStore = defineStore("auth", () => {
   }
 
   async function login(tenant_slug: string, username: string, password: string) {
+    // 调后端 /auth/login
     const { data } = await http.post("/auth/login", { tenant_slug, username, password });
     setSession(data.data.access_token, data.data.refresh_token, data.data.user);
   }
 
   async function loadMe() {
+    // 用 access token 拉当前用户，给路由判断管理员
     if (!accessToken.value) return;
     const { data } = await http.get("/auth/me");
     user.value = data.data;
   }
 
   async function logout() {
+    // 先通知后端拉黑 refresh，再清本地
     const refresh = refreshToken.value;
     try {
       if (refresh) {

@@ -11,6 +11,7 @@ DEV_ADMIN_PASSWORD = "Admin@123456"
 
 
 async def seed_dev_data(session: AsyncSession) -> None:
+    """写入 demo 租户和 admin。已经有 demo 就跳过，避免每次启动重复插入。"""
     if settings.APP_ENV == "prod":
         return
 

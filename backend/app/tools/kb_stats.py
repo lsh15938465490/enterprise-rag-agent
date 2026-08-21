@@ -9,6 +9,7 @@ from app.db.models import Document, KnowledgeBase
 
 
 async def query_kb_stats(db: AsyncSession, tenant_id: UUID) -> str:
+    """只统计当前租户，不会把别的公司数据算进来。"""
     kb_count = int(
         await db.scalar(
             select(func.count()).select_from(KnowledgeBase).where(KnowledgeBase.tenant_id == tenant_id)

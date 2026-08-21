@@ -16,6 +16,7 @@ _client: Redis | None = None
 
 
 async def get_redis() -> Redis | None:
+    """拿到 Redis 客户端；连不上返回 None，调用方改用内存兜底。"""
     global _client
     if _client is None:
         _client = Redis.from_url(settings.REDIS_URL, socket_connect_timeout=1, decode_responses=True)
@@ -28,6 +29,7 @@ async def get_redis() -> Redis | None:
 
 
 async def blacklist_jti(jti: str, ttl_seconds: int) -> None:
+    """登出：把这条 refresh 的身份证记下，过期时间和 refresh 有效期一致。"""
     client = await get_redis()
     key = f"bl:refresh:{jti}"
     if client is not None:
@@ -37,6 +39,7 @@ async def blacklist_jti(jti: str, ttl_seconds: int) -> None:
 
 
 async def is_jti_blacklisted(jti: str) -> bool:
+    """刷新令牌前先问：这张票是不是已经退出登录了。"""
     if jti in _memory_blacklist:
         return True
     client = await get_redis()

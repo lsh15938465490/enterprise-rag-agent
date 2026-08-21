@@ -67,16 +67,19 @@ async def request_id_middleware(request: Request, call_next):
 
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+    """业务错误（未登录、没权限等）。"""
     return error_response(request, exc.code, exc.message, exc.http_status, exc.data)
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """请求参数类型/长度不对。"""
     return error_response(request, 40022, "参数校验失败", 422, exc.errors())
 
 
 @app.exception_handler(StarletteHTTPException)
 async def http_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    """框架自带的 404/401 等，映射到我们的业务码。"""
     code = 40004 if exc.status_code == 404 else 50001
     if exc.status_code == 401:
         code = 40001
@@ -87,6 +90,7 @@ async def http_handler(request: Request, exc: StarletteHTTPException) -> JSONRes
 
 @app.exception_handler(Exception)
 async def unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
+    """没预料到的异常：记日志，对外只说内部错误，避免泄露堆栈。"""
     logger.exception("unhandled")
     return error_response(request, 50001, "内部错误", 500)
 

@@ -38,6 +38,7 @@ SCORE_THRESHOLD = 0.2
 
 
 def _sse(event: str, data: dict) -> str:
+    """拼一条 SSE 文本：event 名字 + data JSON。浏览器按这个一块块解析。"""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
@@ -48,6 +49,7 @@ async def completions(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """问答入口。只能聊自己的会话；Agent 模式走另一条函数。"""
     conv = await db.scalar(
         select(Conversation).where(
             Conversation.id == body.conversation_id,
@@ -159,6 +161,7 @@ async def completions(
 
 
 async def _agent_completions(request, body, db, user, conv, kb_ids, assistant_id):
+    """多步工具调用：先跑图，再把工具事件和最终答案推给前端。"""
     async def event_stream():
         yield _sse("meta", {"message_id": str(assistant_id)})
         try:
@@ -196,6 +199,7 @@ async def _agent_completions(request, body, db, user, conv, kb_ids, assistant_id
 
 
 async def _collect_non_stream(event_stream, request, db, assistant_id):
+    """非流式客户端：把 SSE 在服务端跑完，最后一次性返回完整助手消息。"""
     last_error: dict | None = None
     async for chunk in event_stream():
         if chunk.startswith("event: error"):

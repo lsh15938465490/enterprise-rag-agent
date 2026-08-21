@@ -61,12 +61,14 @@ const pending = computed(() =>
 );
 
 function statusType(s: string) {
+  // 表格里不同状态用不同颜色的标签
   if (s === "ready") return "success";
   if (s === "failed") return "danger";
   return "warning";
 }
 
 async function load() {
+  // 拉取当前知识库的文档列表
   const { data } = await http.get(`/knowledge-bases/${kbId.value}/documents`);
   items.value = data.data.items || [];
 }

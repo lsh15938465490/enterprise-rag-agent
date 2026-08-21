@@ -34,6 +34,7 @@ JSON 字段：thought, action, action_input
 
 
 def build_user_prompt(question: str, contexts: list[dict]) -> str:
+    """把问题和检索片段拼成给模型看的提示词，片段编号对应 [S1][S2]。"""
     lines = [f"问题：{question}", "", "【检索结果】"]
     for i, ctx in enumerate(contexts, start=1):
         lines.append(
@@ -45,6 +46,7 @@ def build_user_prompt(question: str, contexts: list[dict]) -> str:
 
 
 def _headers() -> dict[str, str]:
+    """调用模型 HTTP 接口时的鉴权头。"""
     return {
         "Authorization": f"Bearer {settings.DEEPSEEK_API_KEY}",
         "Content-Type": "application/json",
@@ -52,10 +54,12 @@ def _headers() -> dict[str, str]:
 
 
 def _url() -> str:
+    """兼容官方 DeepSeek 和本地 Ollama：都是 base + /chat/completions。"""
     return settings.DEEPSEEK_BASE_URL.rstrip("/") + "/chat/completions"
 
 
 async def complete_chat(messages: list[dict], temperature: float = 0.2) -> str:
+    """非流式要一整段答案（Agent 规划用）。没 Key 走离线启发式 JSON。"""
     if not settings.DEEPSEEK_API_KEY:
         return _offline_react(messages)
     payload = {
@@ -74,6 +78,7 @@ async def complete_chat(messages: list[dict], temperature: float = 0.2) -> str:
 
 
 async def stream_chat(messages: list[dict], temperature: float = 0.3) -> AsyncIterator[str]:
+    """流式吐字。解析 SSE 失败的行会跳过，不中断整次回答。"""
     if not settings.DEEPSEEK_API_KEY:
         async for token in _offline_answer(messages):
             yield token
@@ -106,6 +111,7 @@ async def stream_chat(messages: list[dict], temperature: float = 0.3) -> AsyncIt
 
 
 def _offline_react(messages: list[dict]) -> str:
+    """没配大模型时，用关键词猜下一步该 retrieve 还是调天气。"""
     user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
     if "Observation" in user or "观察" in user:
         return json.dumps(
@@ -133,6 +139,7 @@ def _offline_react(messages: list[dict]) -> str:
 
 
 async def _offline_answer(messages: list[dict]) -> AsyncIterator[str]:
+    """没 Key 时的占位回答，逐字 yield 以模拟流式。"""
     user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
     if "未覆盖" in user or ("【检索结果】" in user and len(user) < 40):
         text = "当前知识库未覆盖该问题。"

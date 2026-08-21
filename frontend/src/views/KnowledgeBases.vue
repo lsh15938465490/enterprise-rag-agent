@@ -89,6 +89,7 @@ const aclRows = ref<AclRow[]>([]);
 const form = reactive({ name: "", description: "" });
 
 async function load() {
+  // 拉取我能看到的知识库
   const { data } = await http.get("/knowledge-bases");
   list.value = data.data || [];
 }

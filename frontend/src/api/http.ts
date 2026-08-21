@@ -18,6 +18,7 @@ const http = axios.create({
 });
 
 http.interceptors.request.use((config) => {
+  // 每个请求自动带上登录令牌
   const token = localStorage.getItem("access_token");
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
@@ -40,6 +41,7 @@ http.interceptors.response.use(
     return res;
   },
   async (err: AxiosError<Envelope<unknown>>) => {
+    // 401：尝试 refresh 一次；失败才踢回登录页
     const original = err.config as InternalAxiosRequestConfig & { _retry?: boolean };
     if (err.response?.status === 401 && original && !original._retry) {
       original._retry = true;

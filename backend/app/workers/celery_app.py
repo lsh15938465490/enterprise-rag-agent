@@ -17,6 +17,7 @@ celery_app.conf.task_routes = {
 
 @celery_app.task(name="app.workers.tasks.parse_document")
 def parse_document(document_id: str) -> None:
+    """Celery 任务入口：在 worker 进程里跑完整解析流水线。"""
     import asyncio
 
     from app.services.document_pipeline import process_document

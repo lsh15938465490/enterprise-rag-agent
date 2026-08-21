@@ -24,6 +24,7 @@ class ChunkDraft:
 
 
 def _seg(text: str) -> str:
+    """用 jieba 把中文切开，空格拼起来，给 Postgres 全文索引用。"""
     try:
         import jieba
 
@@ -37,6 +38,7 @@ def _seg(text: str) -> str:
 
 
 def query_lexemes(query: str) -> list[str]:
+    """把用户问题切成检索词，去掉「的了是」等没用的字。"""
     text = (query or "").strip()
     if not text:
         return []
@@ -56,6 +58,7 @@ def query_lexemes(query: str) -> list[str]:
 
 
 def _cut_window(text: str) -> list[str]:
+    """滑动窗口切块，尽量在句号或空行处断开。"""
     text = text.strip()
     if not text:
         return []
@@ -79,6 +82,7 @@ def _cut_window(text: str) -> list[str]:
 
 
 def chunk_blocks(blocks: list[tuple[str, int | None, str | None]]) -> list[ChunkDraft]:
+    """解析器给出的大段文字 → 带序号的小块。太短的丢掉。"""
     drafts: list[ChunkDraft] = []
     idx = 0
     for content, page, heading in blocks:

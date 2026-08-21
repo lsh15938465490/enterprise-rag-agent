@@ -25,6 +25,7 @@ class UserDTO(BaseModel):
 
 
 class LoginIn(BaseModel):
+    """登录请求体。"""
     tenant_slug: str = Field(min_length=1, max_length=64)
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=128)
@@ -120,6 +121,7 @@ class DocumentDTO(BaseModel):
 
 
 class ConversationCreateIn(BaseModel):
+    """新建会话：必须选知识库，id 不能重复。"""
     mode: ConvMode = "rag"
     knowledge_base_ids: list[UUID] = Field(min_length=1, max_length=20)
     title: str | None = Field(default=None, max_length=256)
@@ -165,6 +167,7 @@ class ConversationDTO(BaseModel):
 
 
 class ChatIn(BaseModel):
+    """提问请求。stream=true 时走 SSE。"""
     conversation_id: UUID
     question: str = Field(min_length=1, max_length=8000)
     stream: bool = True
