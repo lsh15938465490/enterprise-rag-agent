@@ -2,8 +2,9 @@
   <!-- 一条聊天：用户纯文本，助手 Markdown + 工具条 + 来源卡片 -->
   <div class="msg" :class="role">
     <b>{{ label }}</b>
+    <p v-if="thinking" class="think">think<span class="dots">...</span></p>
     <el-alert
-      v-for="(t, i) in tools"
+      v-for="(t, i) in processLogs"
       :key="i"
       :title="`${t.name} · ${t.status}`"
       :description="t.content"
@@ -51,10 +52,13 @@ const props = defineProps<{
   content: string;
   citations?: Citation[];
   tools?: ToolEvt[];
+  thinking?: boolean;
+  streaming?: boolean;
 }>();
 
 const citations = computed(() => props.citations || []);
 const tools = computed(() => props.tools || []);
+const processLogs = computed(() => (props.streaming ? tools.value : []));
 const label = computed(() => {
   if (props.role === "user") return "我";
   if (props.role === "assistant") return "助手";
@@ -74,5 +78,26 @@ const label = computed(() => {
 }
 .tool {
   margin: 8px 0;
+}
+.think {
+  margin: 8px 0 0;
+  color: #909399;
+  font-size: 14px;
+  font-style: italic;
+}
+.dots {
+  display: inline-block;
+  animation: think-blink 1.2s steps(4, end) infinite;
+}
+@keyframes think-blink {
+  0% {
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.2;
+  }
 }
 </style>

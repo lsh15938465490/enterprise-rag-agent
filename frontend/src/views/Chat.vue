@@ -58,6 +58,23 @@
         <el-empty v-if="!currentId" description="请选择或新建会话" />
         <template v-else>
           <p class="hint">当前模式：{{ currentConv?.mode || "-" }}</p>
+          <div v-if="!messages.length" class="guides">
+            <p class="guide-title">你可以试着问</p>
+            <p v-if="guideLoading" class="guide-empty">正在根据知识库生成引导问题…</p>
+            <button
+              v-for="q in suggestions"
+              :key="q"
+              type="button"
+              class="guide-card"
+              :disabled="sending"
+              @click="sendGuide(q)"
+            >
+              {{ q }}
+            </button>
+            <p v-if="!guideLoading && !suggestions.length" class="guide-empty">
+              当前知识库还没有可检索内容，上传并解析完成后再来看看。
+            </p>
+          </div>
           <ChatMessage
             v-for="m in messages"
             :key="m.id"
@@ -65,6 +82,8 @@
             :content="m.content"
             :citations="m.citations"
             :tools="m.tools"
+            :thinking="sending && m.role === 'assistant' && !m.content"
+            :streaming="Boolean(m.streaming)"
           />
         </template>
       </el-main>
@@ -103,6 +122,7 @@ interface Msg {
   content: string;
   citations: Citation[];
   tools: ToolEvt[];
+  streaming?: boolean;
 }
 interface Conv {
   id: string;
@@ -123,6 +143,8 @@ const messages = ref<Msg[]>([]);
 const question = ref("");
 const sending = ref(false);
 const openMenuId = ref("");
+const suggestions = ref<string[]>([]);
+const guideLoading = ref(false);
 const createForm = reactive({ knowledge_base_ids: [] as string[], mode: "rag", title: "新对话" });
 
 const currentId = computed(() => (route.params.conversationId as string) || "");
@@ -146,6 +168,20 @@ async function loadMessages(id: string) {
     tools: m.tools || [],
     citations: m.citations || [],
   }));
+}
+
+async function loadSuggestions(id: string) {
+  // 空会话才拉引导问题，避免干扰已有聊天
+  suggestions.value = [];
+  guideLoading.value = true;
+  try {
+    const { data } = await http.get(`/conversations/${id}/suggested-questions`);
+    suggestions.value = data.data.questions || [];
+  } catch {
+    suggestions.value = [];
+  } finally {
+    guideLoading.value = false;
+  }
 }
 
 async function createConv() {
@@ -201,6 +237,13 @@ async function onConvCommand(cmd: string, conv: Conv) {
   }
 }
 
+async function sendGuide(q: string) {
+  // 点引导问题：填入输入框并直接发送
+  question.value = q;
+  suggestions.value = [];
+  await send();
+}
+
 async function send() {
   // 用 fetch 读 SSE：axios 不好处理逐字流
   if (!currentId.value || !question.value.trim()) return;
@@ -208,7 +251,7 @@ async function send() {
   const q = question.value.trim();
   question.value = "";
   messages.value.push({ id: "tmp-user", role: "user", content: q, citations: [], tools: [] });
-  const assistant: Msg = { id: "stream", role: "assistant", content: "", citations: [], tools: [] };
+  const assistant: Msg = { id: "stream", role: "assistant", content: "", citations: [], tools: [], streaming: true };
   messages.value.push(assistant);
   try {
     const token = localStorage.getItem("access_token");
@@ -253,6 +296,7 @@ async function send() {
     ElMessage.error(err instanceof Error ? err.message : "发送失败");
     assistant.content = assistant.content || "发送失败";
   } finally {
+    assistant.streaming = false;
     sending.value = false;
     await loadConvs();
   }
@@ -260,12 +304,20 @@ async function send() {
 
 onMounted(async () => {
   await Promise.all([loadConvs(), loadKbs()]);
-  if (currentId.value) await loadMessages(currentId.value);
+  if (currentId.value) {
+    await loadMessages(currentId.value);
+    if (!messages.value.length) await loadSuggestions(currentId.value);
+  }
 });
 
-watch(currentId, (id) => {
-  if (id) loadMessages(id);
-  else messages.value = [];
+watch(currentId, async (id) => {
+  suggestions.value = [];
+  if (id) {
+    await loadMessages(id);
+    if (!messages.value.length) await loadSuggestions(id);
+  } else {
+    messages.value = [];
+  }
 });
 </script>
 
@@ -348,5 +400,43 @@ watch(currentId, (id) => {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+.guides {
+  max-width: 640px;
+  margin: 24px auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.guide-title {
+  margin: 0 0 4px;
+  color: #303133;
+  font-size: 15px;
+  font-weight: 600;
+}
+.guide-empty {
+  margin: 0;
+  color: #909399;
+  font-size: 13px;
+}
+.guide-card {
+  text-align: left;
+  padding: 12px 14px;
+  border: 1px solid #dcdfe6;
+  border-radius: 10px;
+  background: #fff;
+  color: #303133;
+  font-size: 14px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.guide-card:hover:not(:disabled) {
+  border-color: #409eff;
+  background: #ecf5ff;
+  color: #1d4ed8;
+}
+.guide-card:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 </style>

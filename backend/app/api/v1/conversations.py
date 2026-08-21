@@ -26,6 +26,7 @@ from app.db.models import (
 from app.db.session import get_db
 from app.schemas.dto import ConversationCreateIn, ConversationDTO, ConversationPatchIn, MessageDTO
 from app.services.acl import require_read_many
+from app.services.suggest_questions import suggest_questions
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -209,6 +210,26 @@ async def get_conv(
     ]
     ids = await _kb_ids(db, conv.id)
     return ok(request, _conv_dto(conv, ids, packed))
+
+
+@router.get("/{conv_id}/suggested-questions")
+async def suggested_questions(
+    request: Request,
+    conv_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """空会话用：根据绑定知识库已就绪文档，给出最多 3 条引导问题。"""
+    conv = await db.scalar(
+        select(Conversation).where(
+            Conversation.id == conv_id, Conversation.user_id == user.id, Conversation.tenant_id == user.tenant_id
+        )
+    )
+    if conv is None:
+        raise AppError(40004, "资源不存在", 404)
+    kb_ids = await _kb_ids(db, conv.id)
+    questions = await suggest_questions(db, user.tenant_id, kb_ids)
+    return ok(request, {"questions": questions})
 
 
 @router.get("/{conv_id}/messages")

@@ -51,6 +51,7 @@ async def list_docs(
 ):
     """列出某知识库下的文档，可按状态过滤。"""
     kb = await get_kb(db, kb_id, user.tenant_id)
+    stmt = select(Document).where(Document.knowledge_base_id == kb.id)
     count_stmt = select(func.count()).select_from(Document).where(Document.knowledge_base_id == kb.id)
     if status is not None:
         stmt = stmt.where(Document.status == status)
