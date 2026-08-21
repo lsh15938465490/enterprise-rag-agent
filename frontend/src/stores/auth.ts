@@ -35,9 +35,9 @@ export const useAuthStore = defineStore("auth", () => {
     }
   }
 
-  async function login(tenant_slug: string, username: string, password: string) {
-    // 调后端 /auth/login
-    const { data } = await http.post("/auth/login", { tenant_slug, username, password });
+  async function login(username: string, password: string) {
+    // 调后端 /auth/login。单租户界面固定 demo，不再让用户填 slug。
+    const { data } = await http.post("/auth/login", { tenant_slug: "demo", username, password });
     setSession(data.data.access_token, data.data.refresh_token, data.data.user);
   }
 
