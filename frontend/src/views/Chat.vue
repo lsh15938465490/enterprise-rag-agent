@@ -16,12 +16,42 @@
         </el-form-item>
         <el-button type="primary" style="width: 100%" @click="createConv">新建会话</el-button>
       </el-form>
-      <el-menu :default-active="currentId">
-        <el-menu-item v-for="c in convs" :key="c.id" :index="c.id" @click="router.push(`/chat/${c.id}`)">
-          <span>{{ c.title }}</span>
-          <el-tag size="small" style="margin-left: 6px">{{ c.mode }}</el-tag>
-        </el-menu-item>
-      </el-menu>
+      <div class="conv-list">
+        <div
+          v-for="c in convs"
+          :key="c.id"
+          class="conv-item"
+          :class="{ active: c.id === currentId, 'menu-open': openMenuId === c.id }"
+          @click="router.push(`/chat/${c.id}`)"
+        >
+          <span class="conv-main">
+            <span v-if="c.is_pinned" class="pin-dot" title="已置顶">📌</span>
+            <span class="conv-title">{{ c.title }}</span>
+            <el-tag size="small" type="info">{{ c.mode }}</el-tag>
+          </span>
+          <el-dropdown
+            trigger="hover"
+            :show-timeout="0"
+            :hide-timeout="200"
+            @command="(cmd: string) => onConvCommand(cmd, c)"
+            @visible-change="(v: boolean) => (openMenuId = v ? c.id : '')"
+            @click.stop
+          >
+            <button class="more-btn" type="button" @click.stop title="更多">···</button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item :command="c.is_pinned ? 'unpin' : 'pin'">
+                  {{ c.is_pinned ? "取消置顶" : "置顶" }}
+                </el-dropdown-item>
+                <el-dropdown-item command="rename">重命名</el-dropdown-item>
+                <el-dropdown-item command="delete" divided>
+                  <span class="danger-item">删除</span>
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
+      </div>
     </el-aside>
     <el-container>
       <el-main>
@@ -50,7 +80,7 @@
 // Chat.vue：loadKbs/loadConvs 拉列表；createConv 必须先选知识库；send 用 fetch 读 SSE。
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import http from "../api/http";
 import ChatMessage from "../components/ChatMessage.vue";
 
@@ -78,6 +108,7 @@ interface Conv {
   id: string;
   title: string;
   mode: string;
+  is_pinned?: boolean;
 }
 interface KB {
   id: string;
@@ -91,6 +122,7 @@ const kbs = ref<KB[]>([]);
 const messages = ref<Msg[]>([]);
 const question = ref("");
 const sending = ref(false);
+const openMenuId = ref("");
 const createForm = reactive({ knowledge_base_ids: [] as string[], mode: "rag", title: "新对话" });
 
 const currentId = computed(() => (route.params.conversationId as string) || "");
@@ -98,7 +130,7 @@ const currentConv = computed(() => convs.value.find((c) => c.id === currentId.va
 
 async function loadConvs() {
   // 刷新左侧会话列表
-  const { data } = await http.get("/conversations");
+  const { data } = await http.get("/conversations", { params: { page_size: 100 } });
   convs.value = data.data.items || [];
 }
 async function loadKbs() {
@@ -125,6 +157,48 @@ async function createConv() {
   const { data } = await http.post("/conversations", createForm);
   await loadConvs();
   router.push(`/chat/${data.data.id}`);
+}
+
+async function onConvCommand(cmd: string, conv: Conv) {
+  // 三点菜单：置顶 / 重命名 / 删除。点取消会抛异常，这里吞掉。
+  try {
+    if (cmd === "pin" || cmd === "unpin") {
+      await http.patch(`/conversations/${conv.id}`, { is_pinned: cmd === "pin" });
+      ElMessage.success(cmd === "pin" ? "已置顶" : "已取消置顶");
+      await loadConvs();
+      return;
+    }
+    if (cmd === "rename") {
+      const { value } = await ElMessageBox.prompt("请输入会话名称", "重命名", {
+        confirmButtonText: "确定",
+        cancelButtonText: "取消",
+        inputValue: conv.title,
+        inputPattern: /\S+/,
+        inputErrorMessage: "名称不能为空",
+      });
+      await http.patch(`/conversations/${conv.id}`, { title: String(value).trim() });
+      ElMessage.success("已重命名");
+      await loadConvs();
+      return;
+    }
+    if (cmd === "delete") {
+      await ElMessageBox.confirm(`删除后，「${conv.title}」中的消息将不可恢复。`, "删除对话", {
+        type: "warning",
+        confirmButtonText: "删除",
+        cancelButtonText: "取消",
+        confirmButtonClass: "el-button--danger",
+      });
+      await http.delete(`/conversations/${conv.id}`);
+      ElMessage.success("已删除");
+      if (currentId.value === conv.id) {
+        router.push("/chat");
+      }
+      await loadConvs();
+    }
+  } catch (err) {
+    if (err === "cancel" || err === "close") return;
+    throw err;
+  }
 }
 
 async function send() {
@@ -202,6 +276,69 @@ watch(currentId, (id) => {
 .aside {
   border-right: 1px solid #ebeef5;
   overflow: auto;
+}
+.conv-list {
+  padding: 0 8px 12px;
+}
+.conv-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 8px 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #303133;
+}
+.conv-item:hover,
+.conv-item.menu-open {
+  background: #f2f3f5;
+}
+.conv-item.active {
+  background: #ecf5ff;
+  color: #409eff;
+}
+.conv-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.conv-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+.pin-dot {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.more-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #606266;
+  font-size: 16px;
+  letter-spacing: 1px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+}
+.conv-item:hover .more-btn,
+.conv-item.menu-open .more-btn {
+  opacity: 1;
+}
+.more-btn:hover {
+  background: #e4e7ed;
+}
+.danger-item {
+  color: #f56c6c;
 }
 .hint {
   color: #909399;

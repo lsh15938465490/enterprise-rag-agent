@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """程序启动和关闭时跑一次：先做安全检查，再尝试灌开发数据。"""
     settings.assert_safe_for_env()
+    if (settings.DEEPSEEK_API_KEY or "").strip():
+        logger.info("DeepSeek API Key 已加载，问答将调用 %s", settings.DEEPSEEK_BASE_URL)
+    else:
+        logger.warning("DeepSeek API Key 为空，问答将使用离线占位回答")
     try:
         async with SessionLocal() as session:
             await seed_dev_data(session)

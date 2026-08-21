@@ -135,7 +135,9 @@ class ConversationCreateIn(BaseModel):
 
 
 class ConversationPatchIn(BaseModel):
+    """改标题或置顶。字段不传表示不改。"""
     title: str | None = Field(default=None, min_length=1, max_length=256)
+    is_pinned: bool | None = None
 
 
 class CitationDTO(BaseModel):
@@ -163,6 +165,7 @@ class ConversationDTO(BaseModel):
     knowledge_base_ids: list[UUID]
     created_at: datetime
     updated_at: datetime
+    is_pinned: bool = False
     messages: list[MessageDTO] | None = None
 
 

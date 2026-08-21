@@ -218,6 +218,8 @@ class Conversation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    is_pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ConversationKnowledgeBase(Base):

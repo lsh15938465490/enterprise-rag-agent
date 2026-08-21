@@ -1,6 +1,7 @@
 """会话列表、新建会话、消息记录。一个会话必须先勾选知识库。"""
 
 from collections import defaultdict
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -97,6 +98,24 @@ async def _citations_for(db: AsyncSession, message_id: UUID) -> list[dict]:
     return (await _citations_map(db, [message_id])).get(message_id, [])
 
 
+def _conv_dto(
+    conv: Conversation,
+    knowledge_base_ids: list[UUID],
+    messages: list[dict] | None = None,
+) -> dict:
+    """会话转 JSON。列表和详情共用，避免漏字段。"""
+    return ConversationDTO(
+        id=conv.id,
+        title=conv.title,
+        mode=conv.mode.value,
+        knowledge_base_ids=knowledge_base_ids,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+        is_pinned=conv.is_pinned,
+        messages=messages,
+    ).model_dump(mode="json")
+
+
 @router.get("")
 async def list_convs(
     request: Request,
@@ -105,31 +124,24 @@ async def list_convs(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """我的会话列表（分页）。"""
+    """我的会话列表（分页）。置顶的排在最前面。"""
     filt = (Conversation.user_id == user.id, Conversation.tenant_id == user.tenant_id)
     total = int(await db.scalar(select(func.count()).select_from(Conversation).where(*filt)) or 0)
     rows = (
         await db.scalars(
             select(Conversation)
             .where(*filt)
-            .order_by(Conversation.updated_at.desc())
+            .order_by(
+                Conversation.is_pinned.desc(),
+                Conversation.pinned_at.desc().nulls_last(),
+                Conversation.updated_at.desc(),
+            )
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
     ).all()
     kb_map = await _kb_ids_map(db, [c.id for c in rows])
-    items = []
-    for conv in rows:
-        items.append(
-            ConversationDTO(
-                id=conv.id,
-                title=conv.title,
-                mode=conv.mode.value,
-                knowledge_base_ids=kb_map.get(conv.id, []),
-                created_at=conv.created_at,
-                updated_at=conv.updated_at,
-            ).model_dump(mode="json")
-        )
+    items = [_conv_dto(conv, kb_map.get(conv.id, [])) for conv in rows]
     return ok(request, page_data(items, total, page, page_size))
 
 
@@ -165,18 +177,7 @@ async def create_conv(
         db.add(ConversationKnowledgeBase(conversation_id=conv.id, knowledge_base_id=kb_id))
     await db.commit()
     await db.refresh(conv)
-    return ok(
-        request,
-        ConversationDTO(
-            id=conv.id,
-            title=conv.title,
-            mode=conv.mode.value,
-            knowledge_base_ids=body.knowledge_base_ids,
-            created_at=conv.created_at,
-            updated_at=conv.updated_at,
-        ).model_dump(mode="json"),
-        201,
-    )
+    return ok(request, _conv_dto(conv, body.knowledge_base_ids), 201)
 
 
 @router.get("/{conv_id}")
@@ -207,16 +208,7 @@ async def get_conv(
         for m in msgs
     ]
     ids = await _kb_ids(db, conv.id)
-    data = ConversationDTO(
-        id=conv.id,
-        title=conv.title,
-        mode=conv.mode.value,
-        knowledge_base_ids=ids,
-        created_at=conv.created_at,
-        updated_at=conv.updated_at,
-        messages=packed,
-    ).model_dump(mode="json")
-    return ok(request, data)
+    return ok(request, _conv_dto(conv, ids, packed))
 
 
 @router.get("/{conv_id}/messages")
@@ -264,7 +256,7 @@ async def patch_conv(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """改会话标题。"""
+    """改会话标题或置顶。"""
     conv = await db.scalar(
         select(Conversation).where(
             Conversation.id == conv_id, Conversation.user_id == user.id, Conversation.tenant_id == user.tenant_id
@@ -272,22 +264,17 @@ async def patch_conv(
     )
     if conv is None:
         raise AppError(40004, "资源不存在", 404)
-    if body.title:
-        conv.title = body.title
+    if body.title is not None:
+        conv.title = body.title.strip()
+        if not conv.title:
+            raise AppError(40022, "标题不能为空", 422)
+    if body.is_pinned is not None:
+        conv.is_pinned = body.is_pinned
+        conv.pinned_at = datetime.now(timezone.utc) if body.is_pinned else None
     await db.commit()
     await db.refresh(conv)
     ids = await _kb_ids(db, conv.id)
-    return ok(
-        request,
-        ConversationDTO(
-            id=conv.id,
-            title=conv.title,
-            mode=conv.mode.value,
-            knowledge_base_ids=ids,
-            created_at=conv.created_at,
-            updated_at=conv.updated_at,
-        ).model_dump(mode="json"),
-    )
+    return ok(request, _conv_dto(conv, ids))
 
 
 @router.delete("/{conv_id}")

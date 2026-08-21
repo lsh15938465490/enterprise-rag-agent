@@ -4,16 +4,22 @@
 改密码、数据库地址、DeepSeek Key 都写在项目根目录 .env 里，不要写进代码。
 """
 
+from pathlib import Path
+
 from pydantic import computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 固定读仓库根目录 .env，不依赖启动时的当前工作目录。
+_ROOT_ENV = Path(__file__).resolve().parents[3] / ".env"
 
 
 class Settings(BaseSettings):
     """全部环境变量。名称必须和 .env 里的键一致。"""
     model_config = SettingsConfigDict(
-        env_file=("../.env", ".env"),
+        env_file=_ROOT_ENV,
         env_file_encoding="utf-8",
         extra="ignore",
+        env_ignore_empty=True,
     )
 
     APP_ENV: str = "dev"
