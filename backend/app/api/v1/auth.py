@@ -1,0 +1,84 @@
+"""登录 / 刷新令牌 / 登出 / 当前用户信息。"""
+
+import logging
+import uuid
+
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.v1.helpers import ok
+from app.core.config import settings
+from app.core.deps import get_current_user
+from app.core.exceptions import AppError
+from app.core.redis import blacklist_jti, is_jti_blacklisted
+from app.core.security import create_token, decode_token, verify_password
+from app.db.models import Tenant, User
+from app.db.session import get_db
+from app.schemas.dto import LoginIn, RefreshIn, TokenOut, UserDTO
+import jwt
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
+
+
+def _token_payload(user: User) -> dict:
+    access, _ = create_token(user.id, user.tenant_id, "access")
+    refresh, _ = create_token(user.id, user.tenant_id, "refresh")
+    return TokenOut(
+        access_token=access,
+        refresh_token=refresh,
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=UserDTO.model_validate(user),
+    ).model_dump(mode="json")
+
+
+@router.post("/login")
+async def login(request: Request, body: LoginIn, db: AsyncSession = Depends(get_db)):
+    tenant = await db.scalar(select(Tenant).where(Tenant.slug == body.tenant_slug, Tenant.is_active.is_(True)))
+    if tenant is None:
+        raise AppError(40001, "用户名或密码错误", 401)
+    user = await db.scalar(
+        select(User).where(User.tenant_id == tenant.id, User.username == body.username, User.is_active.is_(True))
+    )
+    if user is None or not verify_password(body.password, user.password_hash):
+        raise AppError(40001, "用户名或密码错误", 401)
+    return ok(request, _token_payload(user))
+
+
+@router.post("/refresh")
+async def refresh(request: Request, body: RefreshIn, db: AsyncSession = Depends(get_db)):
+    try:
+        payload = decode_token(body.refresh_token)
+    except jwt.PyJWTError:
+        raise AppError(40001, "认证失败", 401) from None
+    if payload.get("type") != "refresh":
+        raise AppError(40001, "认证失败", 401)
+    jti = str(payload.get("jti") or "")
+    if not jti or await is_jti_blacklisted(jti):
+        raise AppError(40001, "认证失败", 401)
+    try:
+        user_id = uuid.UUID(str(payload.get("sub")))
+    except (ValueError, TypeError):
+        raise AppError(40001, "认证失败", 401) from None
+    user = await db.scalar(select(User).where(User.id == user_id, User.is_active.is_(True)))
+    if user is None:
+        raise AppError(40001, "认证失败", 401)
+    return ok(request, _token_payload(user))
+
+
+@router.post("/logout")
+async def logout(request: Request, body: RefreshIn):
+    try:
+        payload = decode_token(body.refresh_token)
+        jti = str(payload.get("jti") or "")
+        if jti:
+            await blacklist_jti(jti, settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400)
+    except jwt.PyJWTError:
+        logger.info("logout 收到无效 refresh_token，按已登出处理")
+    return ok(request, {"logged_out": True})
+
+
+@router.get("/me")
+async def me(request: Request, user: User = Depends(get_current_user)):
+    return ok(request, UserDTO.model_validate(user).model_dump(mode="json"))
