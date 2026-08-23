@@ -1,7 +1,6 @@
 """接口入参/出参的形状。Pydantic 会自动校验类型和长度，不合格直接 422。"""
 
 from datetime import datetime
-import re
 from typing import Literal
 from uuid import UUID
 
@@ -10,7 +9,6 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 Role = Literal["super_admin", "tenant_admin", "kb_editor", "member"]
 DocStatus = Literal["uploaded", "parsing", "parsed", "embedding", "ready", "failed"]
 ConvMode = Literal["rag", "agent"]
-PASSWORD_RE = re.compile(r"^(?=.*[A-Za-z])(?=.*\d).{8,}$")
 
 
 class UserDTO(BaseModel):
@@ -46,28 +44,14 @@ class TokenOut(BaseModel):
 class UserCreateIn(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
+    password: str = Field(min_length=1, max_length=128)
     role: Role
-
-    @field_validator("password")
-    @classmethod
-    def password_strength(cls, value: str) -> str:
-        if not PASSWORD_RE.match(value):
-            raise ValueError("密码至少 8 位且包含字母和数字")
-        return value
 
 
 class UserPatchIn(BaseModel):
     is_active: bool | None = None
     role: Role | None = None
-    password: str | None = Field(default=None, min_length=8, max_length=128)
-
-    @field_validator("password")
-    @classmethod
-    def password_strength(cls, value: str | None) -> str | None:
-        if value is not None and not PASSWORD_RE.match(value):
-            raise ValueError("密码至少 8 位且包含字母和数字")
-        return value
+    password: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class KnowledgeBaseCreateIn(BaseModel):
@@ -176,3 +160,15 @@ class ChatIn(BaseModel):
     conversation_id: UUID
     question: str = Field(min_length=1, max_length=8000)
     stream: bool = True
+
+
+class FeedbackIn(BaseModel):
+    """点赞 like / 点踩 dislike；传 null 表示清除。"""
+    rating: Literal["like", "dislike"] | None = None
+
+
+class AnalyticsEventIn(BaseModel):
+    event_type: str = Field(min_length=1, max_length=64)
+    resource_type: str | None = Field(default=None, max_length=64)
+    resource_id: UUID | None = None
+    extra: dict | None = None

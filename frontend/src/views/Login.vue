@@ -24,17 +24,25 @@
 <script setup lang="ts">
 // 登录表单。密码不要写死在页面里，由使用者自己输入。
 import { reactive, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { useAuthStore } from "../stores/auth";
 
 const router = useRouter();
+const route = useRoute();
 const auth = useAuthStore();
 const loading = ref(false);
 const form = reactive({
   username: "",
   password: "",
 });
+
+function safeRedirect(): string {
+  const raw = route.query.redirect;
+  if (typeof raw !== "string") return "/chat";
+  if (!raw.startsWith("/") || raw.startsWith("//") || raw.startsWith("/login")) return "/chat";
+  return raw;
+}
 
 async function onSubmit() {
   // 提交登录表单。租户固定走演示租户 demo，页面不再填写。
@@ -46,7 +54,7 @@ async function onSubmit() {
   try {
     await auth.login(form.username, form.password);
     ElMessage.success("登录成功");
-    router.push("/chat");
+    router.push(safeRedirect());
   } finally {
     loading.value = false;
   }

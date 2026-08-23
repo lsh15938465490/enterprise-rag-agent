@@ -33,9 +33,14 @@ class Settings(BaseSettings):
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_API_KEY: str = ""
 
+    # 兼容旧变量名；优先使用下方 LLM_*（OpenAI 兼容接口，不绑定单一厂商）。
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
     DEEPSEEK_MODEL: str = "deepseek-chat"
+    LLM_PROVIDER: str = "openai_compatible"
+    LLM_API_KEY: str = ""
+    LLM_BASE_URL: str = ""
+    LLM_MODEL: str = ""
 
     EMBEDDING_BACKEND: str = "sentence_transformers"
     EMBEDDING_MODEL_NAME: str = "BAAI/bge-m3"
@@ -43,6 +48,11 @@ class Settings(BaseSettings):
 
     UPLOAD_DIR: str = "./data/uploads"
     MAX_UPLOAD_MB: int = 50
+    MAX_CONVERSATIONS_PER_USER: int = 10
+    MAX_KNOWLEDGE_BASES_PER_TENANT: int = 10
+    MAX_DOCUMENTS_PER_KB: int = 5
+    LOGIN_MAX_FAILED_ATTEMPTS: int = 5
+    LOGIN_LOCK_MINUTES: int = 5
 
     WEATHER_API_KEY: str = ""
     ENABLE_READONLY_SQL_TOOL: bool = False
@@ -56,6 +66,25 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         """把逗号分隔的前端地址拆成列表，给浏览器跨域白名单用。"""
         return [item.strip() for item in self.CORS_ORIGINS.split(",") if item.strip()]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def llm_api_key(self) -> str:
+        """优先 LLM_API_KEY，空则回退 DEEPSEEK_API_KEY。"""
+        return (self.LLM_API_KEY or self.DEEPSEEK_API_KEY or "").strip()
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def llm_base_url(self) -> str:
+        """优先 LLM_BASE_URL，空则回退 DeepSeek 官方地址。"""
+        raw = (self.LLM_BASE_URL or self.DEEPSEEK_BASE_URL or "https://api.deepseek.com").strip()
+        return raw.rstrip("/")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def llm_model(self) -> str:
+        """优先 LLM_MODEL，空则回退 DEEPSEEK_MODEL。"""
+        return (self.LLM_MODEL or self.DEEPSEEK_MODEL or "deepseek-chat").strip()
 
     @computed_field  # type: ignore[prop-decorator]
     @property

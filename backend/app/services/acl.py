@@ -25,7 +25,7 @@ async def get_kb(db: AsyncSession, kb_id: UUID, tenant_id: UUID) -> KnowledgeBas
 
 
 async def user_can_read_kb(db: AsyncSession, user: User, kb: KnowledgeBase) -> bool:
-    """本租户启用中的知识库，管理者和普通用户都能看、都能用来问答。"""
+    """停用优先于 ACL：库停用后普通用户即使有 ACL 也不能读；管理者仍可看以便重新启用。"""
     if kb.tenant_id != user.tenant_id:
         return False
     if not kb.is_active and not is_tenant_admin(user):
@@ -34,7 +34,11 @@ async def user_can_read_kb(db: AsyncSession, user: User, kb: KnowledgeBase) -> b
 
 
 async def user_can_write_kb(db: AsyncSession, user: User, kb: KnowledgeBase) -> bool:
-    """能不能上传/改 ACL。普通成员即使能读也不能写。"""
+    """能不能上传/改 ACL。停用库对普通用户不可写（ACL 不能覆盖停用）。"""
+    if kb.tenant_id != user.tenant_id:
+        return False
+    if not kb.is_active and not is_tenant_admin(user):
+        return False
     if not await user_can_read_kb(db, user, kb):
         return False
     if is_tenant_admin(user) or kb.created_by == user.id:

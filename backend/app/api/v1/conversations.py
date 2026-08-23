@@ -5,28 +5,30 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.helpers import ok, page_data
 from app.core.deps import get_current_user
 from app.core.exceptions import AppError
-from app.core.limits import MAX_CONVERSATIONS_PER_USER
+from app.core.limits import max_conversations_per_user
 from app.db.models import (
     Chunk,
     Conversation,
     ConversationKnowledgeBase,
     ConversationMode,
     Document,
+    FeedbackRating,
     KnowledgeBase,
     Message,
     MessageCitation,
+    MessageFeedback,
     MessageRole,
     User,
     UserRole,
 )
 from app.db.session import get_db
-from app.schemas.dto import ConversationCreateIn, ConversationDTO, ConversationPatchIn, MessageDTO
+from app.schemas.dto import ConversationCreateIn, ConversationDTO, ConversationPatchIn, FeedbackIn, MessageDTO
 from app.services.acl import is_tenant_admin, require_read_many
 from app.services.suggest_questions import suggest_questions
 
@@ -212,8 +214,8 @@ async def create_conv(
         )
         or 0
     )
-    if conv_count >= MAX_CONVERSATIONS_PER_USER:
-        raise AppError(40022, f"新对话最多 {MAX_CONVERSATIONS_PER_USER} 个，请先删除后再创建", 422)
+    if conv_count >= max_conversations_per_user():
+        raise AppError(40022, f"新对话最多 {max_conversations_per_user()} 个，请先删除后再创建", 422)
     conv = Conversation(
         tenant_id=user.tenant_id,
         user_id=user.id,
@@ -227,6 +229,36 @@ async def create_conv(
     await db.commit()
     await db.refresh(conv)
     return ok(request, _conv_dto(conv, body.knowledge_base_ids, owner=user), 201)
+
+
+@router.get("/search")
+async def search_convs(
+    request: Request,
+    q: str = Query(..., min_length=1, max_length=200),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """按标题或消息正文关键词检索会话（无前端搜索框）。可见性与列表相同。"""
+    like = f"%{q.strip()}%"
+    scope = _conv_scope(user)
+    matched_msg = exists().where(Message.conversation_id == Conversation.id, Message.content.ilike(like))
+    filt = (*scope, or_(Conversation.title.ilike(like), matched_msg))
+    total = int(await db.scalar(select(func.count()).select_from(Conversation).where(*filt)) or 0)
+    rows = (
+        await db.scalars(
+            select(Conversation)
+            .where(*filt)
+            .order_by(Conversation.updated_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+    kb_map = await _kb_ids_map(db, [c.id for c in rows])
+    owners = await _owners_map(db, [c.user_id for c in rows])
+    items = [_conv_dto(conv, kb_map.get(conv.id, []), owner=owners.get(conv.user_id)) for conv in rows]
+    return ok(request, page_data(items, total, page, page_size))
 
 
 @router.get("/{conv_id}")
@@ -253,6 +285,36 @@ async def get_conv(
     ids = await _kb_ids(db, conv.id)
     owner = (await _owners_map(db, [conv.user_id])).get(conv.user_id)
     return ok(request, _conv_dto(conv, ids, packed, owner=owner))
+
+
+@router.get("/{conv_id}/export")
+async def export_conv(
+    request: Request,
+    conv_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """导出会话 JSON（无前端导出按钮）。权限与打开会话相同。"""
+    conv = await _get_visible_conv(db, conv_id, user)
+    msgs = (
+        await db.scalars(
+            select(Message).where(Message.conversation_id == conv.id).order_by(Message.created_at.asc())
+        )
+    ).all()
+    cite_map = await _citations_map(db, [m.id for m in msgs if m.role == MessageRole.assistant])
+    packed = [
+        _msg_dto(m, cite_map.get(m.id, []) if m.role == MessageRole.assistant else [])
+        for m in msgs
+    ]
+    ids = await _kb_ids(db, conv.id)
+    owner = (await _owners_map(db, [conv.user_id])).get(conv.user_id)
+    return ok(
+        request,
+        {
+            "conversation": _conv_dto(conv, ids, owner=owner),
+            "messages": packed,
+        },
+    )
 
 
 @router.get("/{conv_id}/suggested-questions")
@@ -336,3 +398,58 @@ async def delete_conv(
     await db.delete(conv)
     await db.commit()
     return ok(request, {"deleted": True})
+
+
+@router.put("/{conv_id}/messages/{message_id}/feedback")
+async def put_feedback(
+    request: Request,
+    conv_id: UUID,
+    message_id: UUID,
+    body: FeedbackIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """点赞/点踩存储；rating 为空则清除。无前端按钮。"""
+    conv = await _get_visible_conv(db, conv_id, user)
+    msg = await db.scalar(select(Message).where(Message.id == message_id, Message.conversation_id == conv.id))
+    if msg is None:
+        raise AppError(40004, "资源不存在", 404)
+    row = await db.scalar(
+        select(MessageFeedback).where(MessageFeedback.message_id == msg.id, MessageFeedback.user_id == user.id)
+    )
+    if body.rating is None:
+        if row is not None:
+            await db.delete(row)
+            await db.commit()
+        return ok(request, {"message_id": str(msg.id), "rating": None})
+    if row is None:
+        row = MessageFeedback(
+            tenant_id=user.tenant_id,
+            message_id=msg.id,
+            user_id=user.id,
+            rating=FeedbackRating(body.rating),
+        )
+        db.add(row)
+    else:
+        row.rating = FeedbackRating(body.rating)
+    await db.commit()
+    await db.refresh(row)
+    return ok(request, {"message_id": str(msg.id), "rating": row.rating.value})
+
+
+@router.get("/{conv_id}/messages/{message_id}/feedback")
+async def get_feedback(
+    request: Request,
+    conv_id: UUID,
+    message_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    conv = await _get_visible_conv(db, conv_id, user)
+    msg = await db.scalar(select(Message).where(Message.id == message_id, Message.conversation_id == conv.id))
+    if msg is None:
+        raise AppError(40004, "资源不存在", 404)
+    row = await db.scalar(
+        select(MessageFeedback).where(MessageFeedback.message_id == msg.id, MessageFeedback.user_id == user.id)
+    )
+    return ok(request, {"message_id": str(msg.id), "rating": row.rating.value if row else None})

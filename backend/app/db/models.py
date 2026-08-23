@@ -64,6 +64,11 @@ class ConversationMode(str, enum.Enum):
     agent = "agent"
 
 
+class FeedbackRating(str, enum.Enum):
+    like = "like"
+    dislike = "dislike"
+
+
 def pg_enum(enum_cls: type[enum.Enum], name: str) -> Enum:
     """告诉 SQLAlchemy 用 Postgres 里已有的枚举类型，不要重复创建。"""
     return Enum(
@@ -278,5 +283,43 @@ class AuditLog(Base):
     resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
     resource_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     ip: Mapped[str | None] = mapped_column(INET)
+    extra: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MessageFeedback(Base):
+    """问答点赞/点踩。仅后端存储，前端本期不展示按钮。"""
+    __tablename__ = "message_feedbacks"
+    __table_args__ = (UniqueConstraint("message_id", "user_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    rating: Mapped[FeedbackRating] = mapped_column(pg_enum(FeedbackRating, "feedback_rating"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AnalyticsEvent(Base):
+    """使用热度 / 问答行为埋点。仅接口查询，无前端看板。"""
+    __tablename__ = "analytics_events"
+    __table_args__ = (
+        Index("ix_analytics_tenant_time", "tenant_id", "created_at"),
+        Index("ix_analytics_type", "event_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_type: Mapped[str | None] = mapped_column(String(64))
+    resource_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     extra: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

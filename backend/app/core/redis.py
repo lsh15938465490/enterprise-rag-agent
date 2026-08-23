@@ -5,6 +5,7 @@ Redis 挂了也不致命：退回成进程内存集合（多进程/重启后会�
 """
 
 import logging
+import time
 
 from redis.asyncio import Redis
 
@@ -12,6 +13,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 _memory_blacklist: set[str] = set()
+_memory_kv: dict[str, tuple[str, float]] = {}
 _client: Redis | None = None
 
 
@@ -46,3 +48,60 @@ async def is_jti_blacklisted(jti: str) -> bool:
     if client is None:
         return False
     return bool(await client.exists(f"bl:refresh:{jti}"))
+
+
+def _purge_memory_kv(now: float) -> None:
+    expired = [k for k, (_, exp) in _memory_kv.items() if exp <= now]
+    for k in expired:
+        _memory_kv.pop(k, None)
+
+
+async def kv_get(key: str) -> str | None:
+    """带 TTL 的键值读取；Redis 不可用时用进程内存。"""
+    now = time.time()
+    _purge_memory_kv(now)
+    mem = _memory_kv.get(key)
+    if mem is not None and mem[1] > now:
+        return mem[0]
+    client = await get_redis()
+    if client is None:
+        return None
+    val = await client.get(key)
+    return str(val) if val is not None else None
+
+
+async def kv_setex(key: str, ttl_seconds: int, value: str) -> None:
+    ttl_seconds = max(1, int(ttl_seconds))
+    client = await get_redis()
+    if client is not None:
+        await client.setex(key, ttl_seconds, value)
+        return
+    _memory_kv[key] = (value, time.time() + ttl_seconds)
+
+
+async def kv_incr(key: str, ttl_seconds: int) -> int:
+    """计数 +1；键不存在时同时设置过期。"""
+    ttl_seconds = max(1, int(ttl_seconds))
+    client = await get_redis()
+    if client is not None:
+        n = int(await client.incr(key))
+        if n == 1:
+            await client.expire(key, ttl_seconds)
+        return n
+    now = time.time()
+    _purge_memory_kv(now)
+    prev = _memory_kv.get(key)
+    if prev is None or prev[1] <= now:
+        _memory_kv[key] = ("1", now + ttl_seconds)
+        return 1
+    n = int(prev[0]) + 1
+    _memory_kv[key] = (str(n), prev[1])
+    return n
+
+
+async def kv_delete(*keys: str) -> None:
+    for key in keys:
+        _memory_kv.pop(key, None)
+    client = await get_redis()
+    if client is not None and keys:
+        await client.delete(*keys)

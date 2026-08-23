@@ -1,6 +1,6 @@
 """
-调用大模型（官方 DeepSeek 或本地 Ollama 等 OpenAI 兼容接口）。
-没配 DEEPSEEK_API_KEY 时走离线占位回答，检索照样可以发生。
+调用大模型（OpenAI 兼容接口：官方 DeepSeek、Ollama、vLLM 等）。
+没配 LLM_API_KEY / DEEPSEEK_API_KEY 时走离线占位回答，检索照样可以发生。
 """
 
 import json
@@ -48,22 +48,22 @@ def build_user_prompt(question: str, contexts: list[dict]) -> str:
 def _headers() -> dict[str, str]:
     """调用模型 HTTP 接口时的鉴权头。"""
     return {
-        "Authorization": f"Bearer {settings.DEEPSEEK_API_KEY}",
+        "Authorization": f"Bearer {settings.llm_api_key}",
         "Content-Type": "application/json",
     }
 
 
 def _url() -> str:
     """兼容官方 DeepSeek 和本地 Ollama：都是 base + /chat/completions。"""
-    return settings.DEEPSEEK_BASE_URL.rstrip("/") + "/chat/completions"
+    return settings.llm_base_url + "/chat/completions"
 
 
 async def complete_chat(messages: list[dict], temperature: float = 0.2) -> str:
     """非流式要一整段答案（Agent 规划用）。没 Key 走离线启发式 JSON。"""
-    if not settings.DEEPSEEK_API_KEY:
+    if not settings.llm_api_key:
         return _offline_react(messages)
     payload = {
-        "model": settings.DEEPSEEK_MODEL,
+        "model": settings.llm_model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": 2048,
@@ -72,19 +72,19 @@ async def complete_chat(messages: list[dict], temperature: float = 0.2) -> str:
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(_url(), headers=_headers(), json=payload)
         if resp.status_code >= 400:
-            raise RuntimeError("DeepSeek 不可用")
+            raise RuntimeError("模型服务不可用")
         data = resp.json()
         return data["choices"][0]["message"]["content"] or ""
 
 
 async def stream_chat(messages: list[dict], temperature: float = 0.3) -> AsyncIterator[str]:
     """流式吐字。解析 SSE 失败的行会跳过，不中断整次回答。"""
-    if not settings.DEEPSEEK_API_KEY:
+    if not settings.llm_api_key:
         async for token in _offline_answer(messages):
             yield token
         return
     payload = {
-        "model": settings.DEEPSEEK_MODEL,
+        "model": settings.llm_model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": 2048,
@@ -93,7 +93,7 @@ async def stream_chat(messages: list[dict], temperature: float = 0.3) -> AsyncIt
     async with httpx.AsyncClient(timeout=60.0) as client:
         async with client.stream("POST", _url(), headers=_headers(), json=payload) as resp:
             if resp.status_code >= 400:
-                raise RuntimeError("DeepSeek 不可用")
+                raise RuntimeError("模型服务不可用")
             async for line in resp.aiter_lines():
                 if not line.startswith("data:"):
                     continue
@@ -106,7 +106,7 @@ async def stream_chat(messages: list[dict], temperature: float = 0.3) -> AsyncIt
                     if delta:
                         yield delta
                 except (json.JSONDecodeError, KeyError, IndexError, TypeError):
-                    logger.debug("忽略无法解析的 DeepSeek SSE 行: %s", data[:200])
+                    logger.debug("忽略无法解析的模型 SSE 行: %s", data[:200])
                     continue
 
 
@@ -144,6 +144,6 @@ async def _offline_answer(messages: list[dict]) -> AsyncIterator[str]:
     if "未覆盖" in user or ("【检索结果】" in user and len(user) < 40):
         text = "当前知识库未覆盖该问题。"
     else:
-        text = "根据检索结果：[S1] 请结合来源卡片中的原文理解。当前未配置 DEEPSEEK_API_KEY，这是离线占位回答。"
+        text = "根据检索结果：[S1] 请结合来源卡片中的原文理解。当前未配置大模型密钥，这是离线占位回答。"
     for ch in text:
         yield ch

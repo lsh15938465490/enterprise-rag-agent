@@ -66,7 +66,7 @@ async def suggest_questions(db: AsyncSession, tenant_id: UUID, kb_ids: list[UUID
         )
     ).all()
     fallback = _heuristic([(r[0], r[1] or "", r[2] or "") for r in rows])
-    if not settings.DEEPSEEK_API_KEY or not rows:
+    if not settings.llm_api_key or not rows:
         return fallback[:3]
 
     excerpts: list[str] = []

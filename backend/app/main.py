@@ -6,12 +6,14 @@
 """
 
 import logging
+from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1.router import api_router
@@ -28,10 +30,10 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """程序启动和关闭时跑一次：先做安全检查，再尝试灌开发数据。"""
     settings.assert_safe_for_env()
-    if (settings.DEEPSEEK_API_KEY or "").strip():
-        logger.info("DeepSeek API Key 已加载，问答将调用 %s", settings.DEEPSEEK_BASE_URL)
+    if (settings.llm_api_key or "").strip():
+        logger.info("大模型已配置 provider=%s url=%s model=%s", settings.LLM_PROVIDER, settings.llm_base_url, settings.llm_model)
     else:
-        logger.warning("DeepSeek API Key 为空，问答将使用离线占位回答")
+        logger.warning("大模型密钥为空，问答将使用离线占位回答")
     try:
         async with SessionLocal() as session:
             await seed_dev_data(session)
@@ -75,10 +77,31 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     return error_response(request, exc.code, exc.message, exc.http_status, exc.data)
 
 
+def _validation_message(exc: BaseException) -> tuple[str, Any]:
+    msg = "参数校验失败"
+    details: Any = None
+    try:
+        details = exc.errors()  # type: ignore[attr-defined]
+        blob = str(details)
+        if "password" in blob.lower() or "密码" in blob:
+            msg = "密码至少 8 位且包含字母和数字"
+    except Exception:
+        blob = str(exc)
+        if "password" in blob.lower() or "密码" in blob:
+            msg = "密码至少 8 位且包含字母和数字"
+    return msg, details
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    """请求参数类型/长度不对。"""
-    return error_response(request, 40022, "参数校验失败", 422, exc.errors())
+    msg, details = _validation_message(exc)
+    return error_response(request, 40022, msg, 422, details)
+
+
+@app.exception_handler(ValidationError)
+async def pydantic_validation_handler(request: Request, exc: ValidationError) -> JSONResponse:
+    msg, details = _validation_message(exc)
+    return error_response(request, 40022, msg, 422, details)
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -95,6 +118,8 @@ async def http_handler(request: Request, exc: StarletteHTTPException) -> JSONRes
 @app.exception_handler(Exception)
 async def unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
     """没预料到的异常：记日志，对外只说内部错误，避免泄露堆栈。"""
+    if isinstance(exc, AppError):
+        return error_response(request, exc.code, exc.message, exc.http_status, exc.data)
     logger.exception("unhandled")
     return error_response(request, 50001, "内部错误", 500)
 

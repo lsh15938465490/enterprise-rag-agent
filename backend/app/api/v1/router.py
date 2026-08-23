@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api.v1 import auth, chat, conversations, documents, health, knowledge_bases, tools, users
+from app.api.v1 import analytics, auth, chat, conversations, documents, health, knowledge_bases, system, tools, users
 
 api_router = APIRouter()
 api_router.include_router(health.router)
@@ -13,3 +13,5 @@ api_router.include_router(documents.router)
 api_router.include_router(conversations.router)
 api_router.include_router(chat.router)
 api_router.include_router(tools.router)
+api_router.include_router(analytics.router)
+api_router.include_router(system.router)

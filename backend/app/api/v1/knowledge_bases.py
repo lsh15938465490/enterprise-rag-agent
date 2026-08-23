@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.helpers import ok
 from app.core.deps import get_current_user, require_roles
 from app.core.exceptions import AppError
-from app.core.limits import MAX_KNOWLEDGE_BASES_PER_TENANT
-from app.db.models import KnowledgeBase, KnowledgeBaseAcl, Tenant, User, UserRole
+from app.core.limits import max_documents_per_kb, max_knowledge_bases_per_tenant
+from app.db.models import Document, DocStatus, KnowledgeBase, KnowledgeBaseAcl, Tenant, User, UserRole
 from app.db.session import get_db
 from app.schemas.dto import AclPutIn, KnowledgeBaseCreateIn, KnowledgeBaseDTO, KnowledgeBasePatchIn
 from app.services.acl import get_kb, readable_kb_ids, require_read, require_write
@@ -58,8 +58,8 @@ async def create_kb(
         )
         or 0
     )
-    if kb_count >= MAX_KNOWLEDGE_BASES_PER_TENANT:
-        raise AppError(40022, f"知识库最多 {MAX_KNOWLEDGE_BASES_PER_TENANT} 个，请先删除后再创建", 422)
+    if kb_count >= max_knowledge_bases_per_tenant():
+        raise AppError(40022, f"知识库最多 {max_knowledge_bases_per_tenant()} 个，请先删除后再创建", 422)
     from uuid import uuid4
 
     kb_id = uuid4()
@@ -93,6 +93,49 @@ async def get_one(
     kb = await get_kb(db, kb_id, user.tenant_id)
     await require_read(db, user, kb)
     return ok(request, KnowledgeBaseDTO.model_validate(kb).model_dump(mode="json"))
+
+
+@router.get("/{kb_id}/stats")
+async def kb_stats(
+    request: Request,
+    kb_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """知识库统计（无前端页面）。停用库对普通用户不可见。"""
+    kb = await get_kb(db, kb_id, user.tenant_id)
+    await require_read(db, user, kb)
+    total = int(
+        await db.scalar(select(func.count()).select_from(Document).where(Document.knowledge_base_id == kb.id)) or 0
+    )
+    ready = int(
+        await db.scalar(
+            select(func.count())
+            .select_from(Document)
+            .where(Document.knowledge_base_id == kb.id, Document.status == DocStatus.ready)
+        )
+        or 0
+    )
+    failed = int(
+        await db.scalar(
+            select(func.count())
+            .select_from(Document)
+            .where(Document.knowledge_base_id == kb.id, Document.status == DocStatus.failed)
+        )
+        or 0
+    )
+    return ok(
+        request,
+        {
+            "knowledge_base_id": str(kb.id),
+            "name": kb.name,
+            "is_active": kb.is_active,
+            "document_total": total,
+            "document_ready": ready,
+            "document_failed": failed,
+            "document_limit": max_documents_per_kb(),
+        },
+    )
 
 
 @router.patch("/{kb_id}")

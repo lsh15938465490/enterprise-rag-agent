@@ -91,6 +91,10 @@ async function load() {
 }
 
 async function create() {
+  if (!/^(?=.*[A-Za-z])(?=.*\d).{8,}$/.test(form.password)) {
+    ElMessage.error("密码至少 8 位且包含字母和数字");
+    return;
+  }
   await http.post("/users", form);
   ElMessage.success("已创建");
   dialog.value = false;

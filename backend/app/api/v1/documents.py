@@ -1,7 +1,7 @@
 """文档上传、下载、删除、重新解析。上传后会异步切块并写入向量库。"""
 
 import asyncio
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from fastapi.responses import FileResponse
@@ -12,7 +12,7 @@ from app.api.v1.helpers import ok, page_data
 from app.core.config import settings
 from app.core.deps import get_current_user
 from app.core.exceptions import AppError
-from app.core.limits import MAX_DOCUMENTS_PER_KB
+from app.core.limits import max_documents_per_kb
 from app.db.models import Document, DocStatus, User
 from app.db.session import get_db
 from app.schemas.dto import DocumentDTO
@@ -40,6 +40,48 @@ async def _enqueue(doc_id: UUID) -> None:
     parse_task.delay(str(doc_id))
 
 
+def _suffix(filename: str) -> str:
+    return ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+
+
+async def _persist_upload(
+    db: AsyncSession,
+    *,
+    kb,
+    user: User,
+    filename: str,
+    content_type: str,
+    data: bytes,
+) -> Document:
+    if _suffix(filename) not in ALLOWED_EXT:
+        raise AppError(40022, "不支持的文件类型", 422)
+    dup = await db.scalar(
+        select(Document.id).where(Document.knowledge_base_id == kb.id, Document.filename == filename)
+    )
+    if dup is not None:
+        raise AppError(40022, "已经有相同名字的文档，请修改名字后重新上传", 422)
+    max_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
+    if len(data) > max_bytes:
+        raise AppError(40022, "文件超过大小限制", 422)
+    doc_id = uuid4()
+    storage_key, checksum = save_bytes(str(user.tenant_id), str(kb.id), str(doc_id), filename, data)
+    doc = Document(
+        id=doc_id,
+        tenant_id=user.tenant_id,
+        knowledge_base_id=kb.id,
+        uploaded_by=user.id,
+        filename=filename,
+        content_type=content_type or "application/octet-stream",
+        file_size=len(data),
+        storage_key=storage_key,
+        status=DocStatus.uploaded,
+        checksum_sha256=checksum,
+    )
+    db.add(doc)
+    await db.flush()
+    return doc
+
+
 @router.get("/knowledge-bases/{kb_id}/documents")
 async def list_docs(
     request: Request,
@@ -52,6 +94,7 @@ async def list_docs(
 ):
     """列出某知识库下的文档，可按状态过滤。"""
     kb = await get_kb(db, kb_id, user.tenant_id)
+    await require_read(db, user, kb)
     stmt = select(Document).where(Document.knowledge_base_id == kb.id)
     count_stmt = select(func.count()).select_from(Document).where(Document.knowledge_base_id == kb.id)
     if status is not None:
@@ -74,45 +117,72 @@ async def upload_doc(
 ):
     kb = await get_kb(db, kb_id, user.tenant_id)
     await require_write(db, user, kb)
-    doc_count = int(
-        await db.scalar(select(func.count()).select_from(Document).where(Document.knowledge_base_id == kb.id)) or 0
-    )
-    if doc_count >= MAX_DOCUMENTS_PER_KB:
-        raise AppError(40022, f"每个知识库最多上传 {MAX_DOCUMENTS_PER_KB} 份文档，请先删除后再上传", 422)
     filename = file.filename or "file"
-    suffix = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
-    if suffix not in ALLOWED_EXT:
+    if _suffix(filename) not in ALLOWED_EXT:
         raise AppError(40022, "不支持的文件类型", 422)
+    data = await file.read()
+    max_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
+    if len(data) > max_bytes:
+        raise AppError(40022, "文件超过大小限制", 422)
     dup = await db.scalar(
         select(Document.id).where(Document.knowledge_base_id == kb.id, Document.filename == filename)
     )
     if dup is not None:
         raise AppError(40022, "已经有相同名字的文档，请修改名字后重新上传", 422)
-    data = await file.read()
-    max_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
-    if len(data) > max_bytes:
-        raise AppError(40022, "文件超过大小限制", 422)
-    from uuid import uuid4
-
-    doc_id = uuid4()
-    storage_key, checksum = save_bytes(str(user.tenant_id), str(kb.id), str(doc_id), filename, data)
-    doc = Document(
-        id=doc_id,
-        tenant_id=user.tenant_id,
-        knowledge_base_id=kb.id,
-        uploaded_by=user.id,
-        filename=filename,
-        content_type=file.content_type or "application/octet-stream",
-        file_size=len(data),
-        storage_key=storage_key,
-        status=DocStatus.uploaded,
-        checksum_sha256=checksum,
+    doc_count = int(
+        await db.scalar(select(func.count()).select_from(Document).where(Document.knowledge_base_id == kb.id)) or 0
     )
-    db.add(doc)
+    if doc_count >= max_documents_per_kb():
+        raise AppError(40022, f"每个知识库最多上传 {max_documents_per_kb()} 份文档，请先删除后再上传", 422)
+    doc = await _persist_upload(
+        db, kb=kb, user=user, filename=filename, content_type=file.content_type or "application/octet-stream", data=data
+    )
     await db.commit()
     await db.refresh(doc)
     await _enqueue(doc.id)
     return ok(request, _dto(doc), 202)
+
+
+@router.post("/knowledge-bases/{kb_id}/documents/batch")
+async def upload_docs_batch(
+    request: Request,
+    kb_id: UUID,
+    files: list[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """批量上传（无前端批量页）。全部校验通过后写入，超限整批拒绝。"""
+    kb = await get_kb(db, kb_id, user.tenant_id)
+    await require_write(db, user, kb)
+    if not files:
+        raise AppError(40022, "请至少选择一个文件", 422)
+    names = [(f.filename or "file") for f in files]
+    if len(names) != len(set(names)):
+        raise AppError(40022, "已经有相同名字的文档，请修改名字后重新上传", 422)
+    doc_count = int(
+        await db.scalar(select(func.count()).select_from(Document).where(Document.knowledge_base_id == kb.id)) or 0
+    )
+    if doc_count + len(files) > max_documents_per_kb():
+        raise AppError(40022, f"每个知识库最多上传 {max_documents_per_kb()} 份文档，请先删除后再上传", 422)
+    payloads: list[tuple[UploadFile, bytes]] = []
+    for f in files:
+        payloads.append((f, await f.read()))
+    created: list[Document] = []
+    for f, data in payloads:
+        doc = await _persist_upload(
+            db,
+            kb=kb,
+            user=user,
+            filename=f.filename or "file",
+            content_type=f.content_type or "application/octet-stream",
+            data=data,
+        )
+        created.append(doc)
+    await db.commit()
+    for doc in created:
+        await db.refresh(doc)
+        await _enqueue(doc.id)
+    return ok(request, [_dto(d) for d in created], 202)
 
 
 @router.get("/documents/{doc_id}")

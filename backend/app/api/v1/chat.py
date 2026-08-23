@@ -28,6 +28,7 @@ from app.db.models import (
 from app.db.session import get_db
 from app.schemas.dto import ChatIn, MessageDTO
 from app.services.agent_graph import run_multi_agent
+from app.services.analytics import record_event
 from app.services.llm_deepseek import SYSTEM_PROMPT, build_user_prompt, stream_chat
 from app.services.rag_pipeline import retrieve
 
@@ -69,6 +70,14 @@ async def completions(
     user_msg = Message(conversation_id=conv.id, role=MessageRole.user, content=body.question)
     db.add(user_msg)
     await db.flush()
+    await record_event(
+        db,
+        user=user,
+        event_type="chat_ask",
+        resource_type="conversation",
+        resource_id=conv.id,
+        extra={"mode": conv.mode.value, "kb_ids": [str(x) for x in kb_ids]},
+    )
     assistant_id = uuid4()
 
     if conv.mode == ConversationMode.agent:
@@ -136,8 +145,8 @@ async def completions(
                     full_parts.append(delta)
                     yield _sse("delta", {"text": delta})
             except Exception:
-                logger.exception("DeepSeek 流式调用失败 conversation_id=%s", conv.id)
-                yield _sse("error", {"code": 50010, "message": "DeepSeek 超时"})
+                logger.exception("模型流式调用失败 conversation_id=%s", conv.id)
+                yield _sse("error", {"code": 50010, "message": "模型调用失败"})
                 return
             full = "".join(full_parts)
         assistant = Message(id=assistant_id, conversation_id=conv.id, role=MessageRole.assistant, content=full)
@@ -168,7 +177,7 @@ async def _agent_completions(request, body, db, user, conv, kb_ids, assistant_id
             result = await run_multi_agent(question=body.question, db=db, user=user, kb_ids=kb_ids)
         except Exception:
             logger.exception("Agent 调用失败 conversation_id=%s", conv.id)
-            yield _sse("error", {"code": 50010, "message": "Agent / DeepSeek 调用失败"})
+            yield _sse("error", {"code": 50010, "message": "Agent / 模型调用失败"})
             return
         for ev in result.get("events") or []:
             yield _sse(ev.get("event") or "tool", ev.get("data") or {})
