@@ -3,6 +3,11 @@
   <el-card header="历史会话">
     <el-table :data="items" @row-click="(row: Conv) => router.push(`/chat/${row.id}`)">
       <el-table-column prop="title" label="标题" />
+      <el-table-column v-if="auth.isAdmin" label="创建人" width="140">
+        <template #default="{ row }">
+          <el-tag size="small" :type="row.owner_kind === '管理者' ? 'warning' : 'info'">{{ row.owner_kind }}</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="模式" width="120">
         <template #default="{ row }">
           <el-tag size="small">{{ row.mode }}</el-tag>
@@ -22,15 +27,18 @@
 import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import http from "../api/http";
+import { useAuthStore } from "../stores/auth";
 
 interface Conv {
   id: string;
   title: string;
   mode: string;
   updated_at: string;
+  owner_kind?: string;
 }
 
 const router = useRouter();
+const auth = useAuthStore();
 const items = ref<Conv[]>([]);
 
 onMounted(async () => {

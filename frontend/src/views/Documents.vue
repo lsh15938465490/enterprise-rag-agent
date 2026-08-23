@@ -7,7 +7,7 @@
           <el-button link type="primary" @click="router.push('/kbs')">返回知识库</el-button>
           文档
         </span>
-        <el-upload :show-file-list="false" accept=".pdf,.docx,.txt,.md" :http-request="handleUpload">
+        <el-upload v-if="auth.isAdmin" :show-file-list="false" accept=".pdf,.docx,.txt,.md" :http-request="handleUpload" :before-upload="beforeUpload">
           <el-button type="primary" :loading="uploading">上传 PDF/DOCX/TXT/MD</el-button>
         </el-upload>
       </div>
@@ -23,10 +23,16 @@
       <el-table-column label="操作" width="220">
         <template #default="{ row }">
           <el-button link type="primary" @click="download(row)">下载</el-button>
-          <el-button link type="primary" :disabled="row.status === 'parsing'" @click="reprocess(row.id)">
+          <el-button
+            v-if="auth.isAdmin"
+            link
+            type="primary"
+            :disabled="row.status === 'parsing'"
+            @click="reprocess(row.id)"
+          >
             重新解析
           </el-button>
-          <el-button link type="danger" @click="removeDoc(row)">删除</el-button>
+          <el-button v-if="auth.isAdmin" link type="danger" @click="removeDoc(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -39,6 +45,8 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import http from "../api/http";
+import { notifyLimit } from "../utils/notifyLimit";
+import { useAuthStore } from "../stores/auth";
 
 interface Doc {
   id: string;
@@ -51,6 +59,7 @@ interface Doc {
 
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthStore();
 const kbId = computed(() => route.params.id as string);
 const items = ref<Doc[]>([]);
 const uploading = ref(false);
@@ -85,6 +94,19 @@ function stopPoll() {
     window.clearInterval(timer);
     timer = undefined;
   }
+}
+
+function beforeUpload(file: File) {
+  // 超限或同名时拦截上传，并弹出 3 秒提示
+  if (items.value.length >= 5) {
+    notifyLimit("每个知识库最多上传 5 份文档，请先删除后再上传", "无法上传");
+    return false;
+  }
+  if (items.value.some((d) => d.filename === file.name)) {
+    notifyLimit("已经有相同名字的文档，请修改名字后重新上传", "无法上传");
+    return false;
+  }
+  return true;
 }
 
 async function onFile(file: File) {

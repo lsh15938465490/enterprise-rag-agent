@@ -3,7 +3,7 @@
   <el-card>
     <template #header>
       <div class="row">
-        <span>用户管理</span>
+        <span>权限管理</span>
         <div class="actions">
           <el-input v-model="keyword" placeholder="搜索用户名/邮箱" clearable style="width: 220px" @keyup.enter="load" />
           <el-button @click="load">搜索</el-button>
@@ -16,10 +16,15 @@
       <el-table-column prop="email" label="邮箱" />
       <el-table-column label="角色" width="180">
         <template #default="{ row }">
-          <el-select :model-value="row.role" size="small" @change="(v: string) => changeRole(row, v)">
-            <el-option label="member" value="member" />
-            <el-option label="kb_editor" value="kb_editor" />
-            <el-option label="tenant_admin" value="tenant_admin" />
+          <el-select
+            :model-value="row.role"
+            size="small"
+            :disabled="isProtected(row)"
+            @change="(v: string) => changeRole(row, v)"
+          >
+            <el-option v-if="row.role === 'super_admin'" label="最高管理者" value="super_admin" />
+            <el-option label="普通用户" value="member" />
+            <el-option label="管理者" value="tenant_admin" />
           </el-select>
         </template>
       </el-table-column>
@@ -30,9 +35,10 @@
       </el-table-column>
       <el-table-column label="操作" width="100">
         <template #default="{ row }">
-          <el-button link type="primary" @click="toggleActive(row)">
+          <el-button v-if="!isProtected(row)" link type="primary" @click="toggleActive(row)">
             {{ row.is_active ? "禁用" : "启用" }}
           </el-button>
+          <span v-else class="locked">不可降级</span>
         </template>
       </el-table-column>
     </el-table>
@@ -43,9 +49,8 @@
         <el-form-item label="密码"><el-input v-model="form.password" type="password" /></el-form-item>
         <el-form-item label="角色">
           <el-select v-model="form.role">
-            <el-option label="member" value="member" />
-            <el-option label="kb_editor" value="kb_editor" />
-            <el-option label="tenant_admin" value="tenant_admin" />
+            <el-option label="普通用户" value="member" />
+            <el-option label="管理者" value="tenant_admin" />
           </el-select>
         </el-form-item>
       </el-form>
@@ -75,6 +80,10 @@ const keyword = ref("");
 const dialog = ref(false);
 const form = reactive({ username: "", email: "", password: "", role: "member" });
 
+function isProtected(row: UserRow) {
+  return row.username === "adminliu" || row.role === "super_admin";
+}
+
 async function load() {
   // 管理员用户列表，支持关键字
   const { data } = await http.get("/users", { params: { keyword: keyword.value || undefined, page_size: 50 } });
@@ -93,6 +102,10 @@ async function create() {
 }
 
 async function changeRole(row: UserRow, role: string) {
+  if (isProtected(row)) {
+    ElMessage.warning("最高管理者不能变为普通用户");
+    return;
+  }
   await http.patch(`/users/${row.id}`, { role });
   ElMessage.success("角色已更新");
   await load();
@@ -113,8 +126,8 @@ onMounted(load);
   justify-content: space-between;
   align-items: center;
 }
-.actions {
-  display: flex;
-  gap: 8px;
+.locked {
+  color: #909399;
+  font-size: 12px;
 }
 </style>

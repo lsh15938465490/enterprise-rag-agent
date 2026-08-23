@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.helpers import ok, page_data
 from app.core.deps import require_roles
 from app.core.exceptions import AppError
+from app.core.limits import SUPER_ADMIN_USERNAME
 from app.core.security import hash_password
 from app.db.models import User, UserRole
 from app.db.session import get_db
@@ -17,6 +18,11 @@ from app.schemas.dto import UserCreateIn, UserDTO, UserPatchIn
 router = APIRouter(prefix="/users", tags=["users"])
 
 PASSWORD_RE = re.compile(r"^(?=.*[A-Za-z])(?=.*\d).{8,}$")
+
+
+def _is_protected_super_admin(user: User) -> bool:
+    """最高管理者账号不能降级、不能禁用。"""
+    return user.username == SUPER_ADMIN_USERNAME or user.role == UserRole.super_admin
 
 
 def _check_password(password: str) -> None:
@@ -61,6 +67,8 @@ async def create_user(
     _check_password(body.password)
     if body.role == "super_admin" and admin.role != UserRole.super_admin:
         raise AppError(40003, "无权限", 403)
+    if body.username == SUPER_ADMIN_USERNAME:
+        raise AppError(40003, "不能创建最高管理者账号", 403)
     exists = await db.scalar(
         select(User).where(
             User.tenant_id == admin.tenant_id,
@@ -95,6 +103,11 @@ async def patch_user(
     user = await db.scalar(select(User).where(User.id == user_id, User.tenant_id == admin.tenant_id))
     if user is None:
         raise AppError(40004, "资源不存在", 404)
+    if _is_protected_super_admin(user):
+        if body.is_active is False:
+            raise AppError(40003, "最高管理者不能禁用", 403)
+        if body.role is not None and body.role != "super_admin":
+            raise AppError(40003, "最高管理者不能变为普通用户", 403)
     if body.password:
         _check_password(body.password)
         user.password_hash = hash_password(body.password)

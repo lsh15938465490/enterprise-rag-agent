@@ -12,6 +12,7 @@ from app.api.v1.helpers import ok, page_data
 from app.core.config import settings
 from app.core.deps import get_current_user
 from app.core.exceptions import AppError
+from app.core.limits import MAX_DOCUMENTS_PER_KB
 from app.db.models import Document, DocStatus, User
 from app.db.session import get_db
 from app.schemas.dto import DocumentDTO
@@ -73,10 +74,20 @@ async def upload_doc(
 ):
     kb = await get_kb(db, kb_id, user.tenant_id)
     await require_write(db, user, kb)
+    doc_count = int(
+        await db.scalar(select(func.count()).select_from(Document).where(Document.knowledge_base_id == kb.id)) or 0
+    )
+    if doc_count >= MAX_DOCUMENTS_PER_KB:
+        raise AppError(40022, f"每个知识库最多上传 {MAX_DOCUMENTS_PER_KB} 份文档，请先删除后再上传", 422)
     filename = file.filename or "file"
     suffix = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
     if suffix not in ALLOWED_EXT:
         raise AppError(40022, "不支持的文件类型", 422)
+    dup = await db.scalar(
+        select(Document.id).where(Document.knowledge_base_id == kb.id, Document.filename == filename)
+    )
+    if dup is not None:
+        raise AppError(40022, "已经有相同名字的文档，请修改名字后重新上传", 422)
     data = await file.read()
     max_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
     if len(data) > max_bytes:

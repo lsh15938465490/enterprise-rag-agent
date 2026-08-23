@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.helpers import ok
 from app.core.deps import get_current_user
 from app.core.exceptions import AppError
+from app.services.acl import is_tenant_admin
 from app.db.models import (
     Conversation,
     ConversationKnowledgeBase,
@@ -49,15 +50,14 @@ async def completions(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """问答入口。只能聊自己的会话；Agent 模式走另一条函数。"""
+    """问答入口。普通用户只能聊自己的会话；管理者可打开本租户任意会话。"""
     conv = await db.scalar(
         select(Conversation).where(
             Conversation.id == body.conversation_id,
-            Conversation.user_id == user.id,
             Conversation.tenant_id == user.tenant_id,
         )
     )
-    if conv is None:
+    if conv is None or (not is_tenant_admin(user) and conv.user_id != user.id):
         raise AppError(40004, "资源不存在", 404)
     kb_ids = list(
         await db.scalars(

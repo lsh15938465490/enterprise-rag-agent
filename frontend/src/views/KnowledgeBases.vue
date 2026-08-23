@@ -4,7 +4,7 @@
     <template #header>
       <div class="row">
         <span>知识库</span>
-        <el-button type="primary" @click="dialog = true">新建</el-button>
+        <el-button v-if="auth.isAdmin" type="primary" @click="onCreateClick">新建</el-button>
       </div>
     </template>
     <el-table :data="list" @row-click="(row: KB) => router.push(`/kbs/${row.id}/docs`)">
@@ -19,8 +19,8 @@
         <template #default="{ row }">
           <el-button link type="primary" @click.stop="router.push(`/kbs/${row.id}/docs`)">文档</el-button>
           <el-button v-if="auth.isAdmin" link type="primary" @click.stop="openAcl(row)">ACL</el-button>
-          <el-button link @click.stop="toggleActive(row)">{{ row.is_active ? "停用" : "启用" }}</el-button>
-          <el-button link type="danger" @click.stop="removeKb(row)">删除</el-button>
+          <el-button v-if="auth.isAdmin" link @click.stop="toggleActive(row)">{{ row.is_active ? "停用" : "启用" }}</el-button>
+          <el-button v-if="auth.isAdmin" link type="danger" @click.stop="removeKb(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -58,6 +58,7 @@ import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import http from "../api/http";
 import { useAuthStore } from "../stores/auth";
+import { notifyLimit } from "../utils/notifyLimit";
 
 interface KB {
   id: string;
@@ -92,6 +93,14 @@ async function load() {
   // 拉取我能看到的知识库
   const { data } = await http.get("/knowledge-bases");
   list.value = data.data || [];
+}
+
+async function onCreateClick() {
+  if (list.value.filter((k) => k.is_active).length >= 10) {
+    notifyLimit("知识库最多 10 个，请先删除后再创建");
+    return;
+  }
+  dialog.value = true;
 }
 
 async function create() {

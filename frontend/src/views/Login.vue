@@ -5,7 +5,7 @@
       <template #header>
         <div class="card-title">
           <span>登录</span>
-          <span class="hint">（用户名：admin 登录密码：Admin@123456）</span>
+          <span class="hint">（最高管理者 adminliu / 普通用户 user，密码均为 Admin@123456）</span>
         </div>
       </template>
       <el-form label-position="top" @submit.prevent="onSubmit">
@@ -61,7 +61,7 @@ async function onSubmit() {
   background: #f5f7fa;
 }
 .card {
-  width: 420px;
+  width: 520px;
 }
 .card-title {
   display: flex;

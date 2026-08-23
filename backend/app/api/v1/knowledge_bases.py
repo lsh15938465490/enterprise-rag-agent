@@ -3,13 +3,14 @@
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.helpers import ok
 from app.core.deps import get_current_user, require_roles
 from app.core.exceptions import AppError
+from app.core.limits import MAX_KNOWLEDGE_BASES_PER_TENANT
 from app.db.models import KnowledgeBase, KnowledgeBaseAcl, Tenant, User, UserRole
 from app.db.session import get_db
 from app.schemas.dto import AclPutIn, KnowledgeBaseCreateIn, KnowledgeBaseDTO, KnowledgeBasePatchIn
@@ -49,6 +50,16 @@ async def create_kb(
     tenant = await db.scalar(select(Tenant).where(Tenant.id == user.tenant_id))
     if tenant is None:
         raise AppError(40004, "资源不存在", 404)
+    kb_count = int(
+        await db.scalar(
+            select(func.count())
+            .select_from(KnowledgeBase)
+            .where(KnowledgeBase.tenant_id == user.tenant_id, KnowledgeBase.is_active.is_(True))
+        )
+        or 0
+    )
+    if kb_count >= MAX_KNOWLEDGE_BASES_PER_TENANT:
+        raise AppError(40022, f"知识库最多 {MAX_KNOWLEDGE_BASES_PER_TENANT} 个，请先删除后再创建", 422)
     from uuid import uuid4
 
     kb_id = uuid4()

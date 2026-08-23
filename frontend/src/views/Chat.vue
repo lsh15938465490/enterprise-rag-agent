@@ -4,7 +4,14 @@
     <el-aside width="280px" class="aside">
       <el-form label-position="top" style="padding: 0 8px 12px">
         <el-form-item label="知识库">
-          <el-select v-model="createForm.knowledge_base_ids" multiple placeholder="选择知识库" style="width: 100%">
+          <el-select
+            ref="kbSelectRef"
+            v-model="createForm.knowledge_base_ids"
+            multiple
+            placeholder="选择知识库"
+            style="width: 100%"
+            @change="closeKbDropdown"
+          >
             <el-option v-for="k in kbs" :key="k.id" :label="k.name" :value="k.id" />
           </el-select>
         </el-form-item>
@@ -27,6 +34,9 @@
           <span class="conv-main">
             <span v-if="c.is_pinned" class="pin-dot" title="已置顶">📌</span>
             <span class="conv-title">{{ c.title }}</span>
+            <el-tag v-if="auth.isAdmin" size="small" :type="c.owner_kind === '管理者' ? 'warning' : 'info'">
+              {{ c.owner_kind }}
+            </el-tag>
             <el-tag size="small" type="info">{{ c.mode }}</el-tag>
           </span>
           <el-dropdown
@@ -53,8 +63,9 @@
         </div>
       </div>
     </el-aside>
-    <el-container>
-      <el-main>
+    <el-container class="chat-right">
+      <el-main class="chat-main">
+        <div ref="msgPane" class="msg-pane">
         <el-empty v-if="!currentId" description="请选择或新建会话" />
         <template v-else>
           <p class="hint">当前模式：{{ currentConv?.mode || "-" }}</p>
@@ -86,6 +97,7 @@
             :streaming="Boolean(m.streaming)"
           />
         </template>
+        </div>
       </el-main>
       <el-footer height="80px" class="composer">
         <el-input v-model="question" placeholder="输入问题，Enter 发送" :disabled="!currentId" @keyup.enter="send" />
@@ -97,11 +109,13 @@
 
 <script setup lang="ts">
 // Chat.vue：loadKbs/loadConvs 拉列表；createConv 必须先选知识库；send 用 fetch 读 SSE。
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import http from "../api/http";
 import ChatMessage from "../components/ChatMessage.vue";
+import { notifyLimit } from "../utils/notifyLimit";
+import { useAuthStore } from "../stores/auth";
 
 interface Citation {
   chunk_id: string;
@@ -129,6 +143,8 @@ interface Conv {
   title: string;
   mode: string;
   is_pinned?: boolean;
+  owner_kind?: string;
+  owner_username?: string;
 }
 interface KB {
   id: string;
@@ -137,6 +153,7 @@ interface KB {
 
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthStore();
 const convs = ref<Conv[]>([]);
 const kbs = ref<KB[]>([]);
 const messages = ref<Msg[]>([]);
@@ -146,9 +163,25 @@ const openMenuId = ref("");
 const suggestions = ref<string[]>([]);
 const guideLoading = ref(false);
 const createForm = reactive({ knowledge_base_ids: [] as string[], mode: "rag", title: "新对话" });
+const kbSelectRef = ref<{ blur: () => void } | null>(null);
+
+function closeKbDropdown() {
+  // 选中一项后收起下拉，避免挡着新建会话按钮
+  nextTick(() => kbSelectRef.value?.blur());
+}
 
 const currentId = computed(() => (route.params.conversationId as string) || "");
 const currentConv = computed(() => convs.value.find((c) => c.id === currentId.value));
+const msgPane = ref<HTMLElement | null>(null);
+
+function scrollToLatest() {
+  // 把右侧对话滚到最底部，看到最新一条
+  nextTick(() => {
+    const el = msgPane.value;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  });
+}
 
 async function loadConvs() {
   // 刷新左侧会话列表
@@ -186,11 +219,16 @@ async function loadSuggestions(id: string) {
 
 async function createConv() {
   // 必须先勾选知识库，否则检索没有范围
+  if (convs.value.length >= 10) {
+    notifyLimit("新对话最多 10 个，请先删除后再创建");
+    return;
+  }
   if (!createForm.knowledge_base_ids.length) {
     ElMessage.warning("请至少选择一个知识库");
     return;
   }
   const { data } = await http.post("/conversations", createForm);
+  createForm.knowledge_base_ids = [];
   await loadConvs();
   router.push(`/chat/${data.data.id}`);
 }
@@ -253,6 +291,7 @@ async function send() {
   messages.value.push({ id: "tmp-user", role: "user", content: q, citations: [], tools: [] });
   const assistant: Msg = { id: "stream", role: "assistant", content: "", citations: [], tools: [], streaming: true };
   messages.value.push(assistant);
+  scrollToLatest();
   try {
     const token = localStorage.getItem("access_token");
     const resp = await fetch("/api/v1/chat/completions", {
@@ -281,9 +320,18 @@ async function send() {
           if (line.startsWith("data:")) {
             try {
               const payload = JSON.parse(line.slice(5).trim());
-              if (eventName === "delta") assistant.content += payload.text || "";
-              if (eventName === "citation") assistant.citations.push(payload);
-              if (eventName === "tool") assistant.tools.push(payload);
+              if (eventName === "delta") {
+                assistant.content += payload.text || "";
+                scrollToLatest();
+              }
+              if (eventName === "citation") {
+                assistant.citations.push(payload);
+                scrollToLatest();
+              }
+              if (eventName === "tool") {
+                assistant.tools.push(payload);
+                scrollToLatest();
+              }
               if (eventName === "error") assistant.content += payload.message || "出错";
             } catch {
               continue;
@@ -307,6 +355,7 @@ onMounted(async () => {
   if (currentId.value) {
     await loadMessages(currentId.value);
     if (!messages.value.length) await loadSuggestions(currentId.value);
+    scrollToLatest();
   }
 });
 
@@ -315,6 +364,7 @@ watch(currentId, async (id) => {
   if (id) {
     await loadMessages(id);
     if (!messages.value.length) await loadSuggestions(id);
+    scrollToLatest();
   } else {
     messages.value = [];
   }
@@ -324,6 +374,24 @@ watch(currentId, async (id) => {
 <style scoped>
 .chat-wrap {
   height: calc(100vh - 120px);
+}
+.chat-right {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.chat-main {
+  padding: 0 !important;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.msg-pane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px;
 }
 .aside {
   border-right: 1px solid #ebeef5;

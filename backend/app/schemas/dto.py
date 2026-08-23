@@ -166,6 +166,8 @@ class ConversationDTO(BaseModel):
     created_at: datetime
     updated_at: datetime
     is_pinned: bool = False
+    owner_username: str = ""
+    owner_kind: str = "普通用户"
     messages: list[MessageDTO] | None = None
 
 
