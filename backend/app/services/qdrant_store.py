@@ -116,3 +116,14 @@ async def delete_by_document(collection: str, document_id: UUID) -> None:
         logger.warning("Qdrant 删除失败 document_id=%s", document_id, exc_info=True)
     finally:
         await client.close()
+
+
+async def delete_collection(name: str) -> None:
+    """删除整个向量集合。集合不存在也当成功。"""
+    client = _client()
+    try:
+        await client.delete_collection(collection_name=name)
+    except Exception:
+        logger.warning("Qdrant 删除集合失败 collection=%s", name, exc_info=True)
+    finally:
+        await client.close()

@@ -122,7 +122,7 @@ async def retrieve_node(state: AgentState, config: RunnableConfig) -> dict[str, 
     query = str((state.get("action_input") or {}).get("query") or state["question"])
     events = list(state.get("events") or [])
     events.append({"event": "tool", "data": {"name": "retrieve_agent", "status": "running", "content": query}})
-    hits = await retrieve(db, user.tenant_id, kb_ids, query)
+    hits = await retrieve(db, cfg.get("tenant_id") or user.tenant_id, kb_ids, query)
     citations = []
     lines = []
     for i, item in enumerate(hits, start=1):
@@ -153,7 +153,7 @@ async def execute_node(state: AgentState, config: RunnableConfig) -> dict[str, A
     name = str(inp.get("tool") or "")
     events = list(state.get("events") or [])
     events.append({"event": "tool", "data": {"name": name or "execute_agent", "status": "running", "content": json.dumps(inp, ensure_ascii=False)}})
-    result = await run_tool(name=name, args=inp, db=db, tenant_id=user.tenant_id, user=user)
+    result = await run_tool(name=name, args=inp, db=db, tenant_id=cfg.get("tenant_id") or user.tenant_id, user=user)
     events.append({"event": "tool", "data": {"name": name or "execute_agent", "status": "done", "content": result}})
     scratch = (state.get("scratchpad") or "") + f"\nObservation({name}): {result}"
     return {"events": events, "scratchpad": scratch}
@@ -184,7 +184,7 @@ def build_agent_graph():
 agent_graph = build_agent_graph()
 
 
-async def run_multi_agent(*, question: str, db, user: User, kb_ids: list[UUID]) -> AgentState:
+async def run_multi_agent(*, question: str, db, user: User, kb_ids: list[UUID], tenant_id: UUID | None = None) -> AgentState:
     """聊天接口调用的入口：跑完整张图，返回最终答案和引用。"""
     initial: AgentState = {
         "question": question,
@@ -200,7 +200,7 @@ async def run_multi_agent(*, question: str, db, user: User, kb_ids: list[UUID]) 
         initial,
         config={
             "recursion_limit": settings.AGENT_MAX_ITERATIONS * 2 + 2,
-            "configurable": {"db": db, "user": user, "kb_ids": kb_ids},
+            "configurable": {"db": db, "user": user, "kb_ids": kb_ids, "tenant_id": tenant_id or user.tenant_id},
         },
     )
     return result

@@ -5,6 +5,7 @@
 
 import json
 import logging
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Request
@@ -13,9 +14,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.helpers import ok
+from app.api.v1.conversations import _get_visible_conv
 from app.core.deps import get_current_user
 from app.core.exceptions import AppError
-from app.services.acl import is_tenant_admin
 from app.db.models import (
     Conversation,
     ConversationKnowledgeBase,
@@ -25,11 +26,12 @@ from app.db.models import (
     MessageRole,
     User,
 )
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.schemas.dto import ChatIn, MessageDTO
 from app.services.agent_graph import run_multi_agent
 from app.services.analytics import record_event
 from app.services.llm_deepseek import SYSTEM_PROMPT, build_user_prompt, stream_chat
+from app.services.acl import filter_active_kb_ids, filter_readable_kb_ids
 from app.services.rag_pipeline import retrieve
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -37,11 +39,21 @@ logger = logging.getLogger(__name__)
 UNCOVERED = "当前知识库未覆盖该问题。"
 # 语义分大约在 0.05~1 时才用这个门槛；关键词融合分很小，不能拿它当「没搜到」。
 SCORE_THRESHOLD = 0.2
+SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
 
 
 def _sse(event: str, data: dict) -> str:
     """拼一条 SSE 文本：event 名字 + data JSON。浏览器按这个一块块解析。"""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _touch_conversation(conv: Conversation) -> None:
+    """有新问答时刷新会话时间，智能问答侧栏按此排到最前。"""
+    conv.updated_at = datetime.now(timezone.utc)
 
 
 @router.post("/completions")
@@ -51,15 +63,8 @@ async def completions(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """问答入口。普通用户只能聊自己的会话；管理者可打开本租户任意会话。"""
-    conv = await db.scalar(
-        select(Conversation).where(
-            Conversation.id == body.conversation_id,
-            Conversation.tenant_id == user.tenant_id,
-        )
-    )
-    if conv is None or (not is_tenant_admin(user) and conv.user_id != user.id):
-        raise AppError(40004, "资源不存在", 404)
+    """问答入口。可见范围与会话列表一致。"""
+    conv = await _get_visible_conv(db, body.conversation_id, user)
     kb_ids = list(
         await db.scalars(
             select(ConversationKnowledgeBase.knowledge_base_id).where(
@@ -67,8 +72,11 @@ async def completions(
             )
         )
     )
+    kb_ids = await filter_active_kb_ids(db, kb_ids)
+    kb_ids = await filter_readable_kb_ids(db, user, kb_ids)
     user_msg = Message(conversation_id=conv.id, role=MessageRole.user, content=body.question)
     db.add(user_msg)
+    _touch_conversation(conv)
     await db.flush()
     await record_event(
         db,
@@ -81,9 +89,17 @@ async def completions(
     assistant_id = uuid4()
 
     if conv.mode == ConversationMode.agent:
+        await db.commit()
         return await _agent_completions(request, body, db, user, conv, kb_ids, assistant_id)
 
-    hits = await retrieve(db, user.tenant_id, kb_ids, body.question)
+    if not kb_ids:
+        hits = []
+    else:
+        try:
+            hits = await retrieve(db, conv.tenant_id, kb_ids, body.question)
+        except Exception:
+            logger.exception("检索失败 conversation_id=%s", conv.id)
+            raise AppError(50010, "检索失败，请稍后重试", 502)
     if not hits:
         uncovered = True
     elif hits[0].score < SCORE_THRESHOLD and 0.05 <= hits[0].score <= 1.0:
@@ -120,25 +136,34 @@ async def completions(
     else:
         llm_messages.append({"role": "user", "content": build_user_prompt(body.question, contexts)})
 
+    citation_payloads: list[dict] = []
+    if not uncovered:
+        for item in hits:
+            citation_payloads.append(
+                {
+                    "chunk_id": str(item.chunk.id),
+                    "filename": item.filename,
+                    "page_number": item.chunk.page_number,
+                    "heading": item.chunk.heading,
+                    "score": item.score,
+                    "snippet": item.chunk.content[:240],
+                    "chunk_uuid": item.chunk.id,
+                }
+            )
+    await db.commit()
+
     async def event_stream():
         yield _sse("meta", {"message_id": str(assistant_id)})
-        citations_payload = []
+        citations_for_db = []
         if uncovered:
             text = UNCOVERED
             for ch in text:
                 yield _sse("delta", {"text": ch})
             full = text
         else:
-            for item in hits:
-                payload = {
-                    "chunk_id": str(item.chunk.id),
-                    "filename": item.filename,
-                    "page_number": item.chunk.page_number,
-                    "score": item.score,
-                    "snippet": item.chunk.content[:240],
-                }
-                citations_payload.append((item, payload))
-                yield _sse("citation", payload)
+            for payload in citation_payloads:
+                citations_for_db.append(payload)
+                yield _sse("citation", {k: payload[k] for k in payload if k != "chunk_uuid"})
             full_parts: list[str] = []
             try:
                 async for delta in stream_chat(llm_messages, temperature=0.3):
@@ -149,23 +174,27 @@ async def completions(
                 yield _sse("error", {"code": 50010, "message": "模型调用失败"})
                 return
             full = "".join(full_parts)
-        assistant = Message(id=assistant_id, conversation_id=conv.id, role=MessageRole.assistant, content=full)
-        db.add(assistant)
-        if not uncovered:
-            for rank, (item, _) in enumerate(citations_payload, start=1):
-                db.add(
-                    MessageCitation(
-                        message_id=assistant_id,
-                        chunk_id=item.chunk.id,
-                        score=item.score,
-                        rank=rank,
+        async with SessionLocal() as session:
+            assistant = Message(id=assistant_id, conversation_id=conv.id, role=MessageRole.assistant, content=full)
+            session.add(assistant)
+            if not uncovered:
+                for rank, payload in enumerate(citations_for_db, start=1):
+                    session.add(
+                        MessageCitation(
+                            message_id=assistant_id,
+                            chunk_id=payload["chunk_uuid"],
+                            score=float(payload["score"] or 0),
+                            rank=rank,
+                        )
                     )
-                )
-        await db.commit()
+            row = await session.get(Conversation, conv.id)
+            if row is not None:
+                _touch_conversation(row)
+            await session.commit()
         yield _sse("done", {"message_id": str(assistant_id), "prompt_tokens": 0, "completion_tokens": 0})
 
     if body.stream:
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        return StreamingResponse(event_stream(), media_type="text/event-stream", headers=SSE_HEADERS)
     return await _collect_non_stream(event_stream, request, db, assistant_id)
 
 
@@ -174,7 +203,7 @@ async def _agent_completions(request, body, db, user, conv, kb_ids, assistant_id
     async def event_stream():
         yield _sse("meta", {"message_id": str(assistant_id)})
         try:
-            result = await run_multi_agent(question=body.question, db=db, user=user, kb_ids=kb_ids)
+            result = await run_multi_agent(question=body.question, db=db, user=user, kb_ids=kb_ids, tenant_id=conv.tenant_id)
         except Exception:
             logger.exception("Agent 调用失败 conversation_id=%s", conv.id)
             yield _sse("error", {"code": 50010, "message": "Agent / 模型调用失败"})
@@ -186,6 +215,7 @@ async def _agent_completions(request, body, db, user, conv, kb_ids, assistant_id
             yield _sse("delta", {"text": ch})
         assistant = Message(id=assistant_id, conversation_id=conv.id, role=MessageRole.assistant, content=answer)
         db.add(assistant)
+        _touch_conversation(conv)
         for rank, cite in enumerate(result.get("citations") or [], start=1):
             try:
                 db.add(
@@ -203,7 +233,7 @@ async def _agent_completions(request, body, db, user, conv, kb_ids, assistant_id
         yield _sse("done", {"message_id": str(assistant_id), "prompt_tokens": 0, "completion_tokens": 0})
 
     if body.stream:
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        return StreamingResponse(event_stream(), media_type="text/event-stream", headers=SSE_HEADERS)
     return await _collect_non_stream(event_stream, request, db, assistant_id)
 
 

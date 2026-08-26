@@ -36,10 +36,18 @@ async def get_current_user(
         raise AppError(40001, "认证失败", 401)
     try:
         user_id = uuid.UUID(str(payload.get("sub")))
-        tenant_id = uuid.UUID(str(payload.get("tenant_id")))
     except (ValueError, TypeError):
         raise AppError(40001, "认证失败", 401) from None
-    user = await db.scalar(select(User).where(User.id == user_id, User.tenant_id == tenant_id))
+    raw_tid = str(payload.get("tenant_id") or "")
+    stmt = select(User).where(User.id == user_id)
+    if raw_tid:
+        try:
+            stmt = stmt.where(User.tenant_id == uuid.UUID(raw_tid))
+        except ValueError:
+            raise AppError(40001, "认证失败", 401) from None
+    else:
+        stmt = stmt.where(User.tenant_id.is_(None))
+    user = await db.scalar(stmt)
     if user is None or not user.is_active:
         raise AppError(40001, "认证失败", 401)
     return user

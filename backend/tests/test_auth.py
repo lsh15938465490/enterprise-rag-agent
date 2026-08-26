@@ -18,3 +18,11 @@ def test_jwt_contains_tenant():
     assert payload["tenant_id"] == str(tid)
     assert payload["type"] == "access"
     assert payload["jti"] == jti
+
+
+def test_jwt_platform_super_admin_has_empty_tenant():
+    uid = uuid4()
+    token, _ = create_token(uid, None, "access")
+    payload = decode_token(token)
+    assert payload["sub"] == str(uid)
+    assert payload["tenant_id"] == ""

@@ -94,7 +94,7 @@ class Tenant(Base):
 
 
 class User(Base):
-    """登录账号，属于某一个租户。"""
+    """登录账号。普通账号属于某个部门；超级管理员 tenant_id 为空。"""
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint("tenant_id", "username"),
@@ -103,7 +103,7 @@ class User(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=True)
     username: Mapped[str] = mapped_column(String(64), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -114,7 +114,22 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    tenant: Mapped[Tenant] = relationship(back_populates="users")
+    tenant: Mapped[Tenant | None] = relationship(back_populates="users")
+
+
+class LoginHistory(Base):
+    """每次登录一条记录，权限管理页展示时间和设备。"""
+    __tablename__ = "login_histories"
+    __table_args__ = (Index("ix_login_histories_user_time", "user_id", "logged_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    device_name: Mapped[str] = mapped_column(String(128), nullable=False, default="未知设备")
+    user_agent: Mapped[str | None] = mapped_column(String(512))
+    logged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class KnowledgeBase(Base):

@@ -7,6 +7,7 @@
         <el-menu-item index="/chat">智能问答</el-menu-item>
         <el-menu-item index="/kbs">知识库</el-menu-item>
         <el-menu-item index="/history">历史会话</el-menu-item>
+        <el-menu-item v-if="auth.isAdmin" index="/stats">数据统计</el-menu-item>
         <el-menu-item v-if="auth.isAdmin" index="/admin/users">权限管理</el-menu-item>
       </el-menu>
     </el-aside>
@@ -15,6 +16,9 @@
         <span>RAG 问答</span>
         <span>
           {{ auth.user?.username }}
+          <el-tag v-if="auth.user?.tenant_name || auth.user?.tenant_slug" size="small" style="margin: 0 8px">
+            {{ auth.user.tenant_name || auth.user.tenant_slug }}
+          </el-tag>
           <el-tag v-if="auth.user" size="small" :type="auth.isAdmin ? 'warning' : 'info'" style="margin: 0 8px">
             {{ roleLabel }}
           </el-tag>
@@ -38,8 +42,8 @@ const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
 const roleLabel = computed(() => {
-  if (auth.user?.role === "super_admin") return "最高管理者";
-  if (auth.isAdmin) return "管理者";
+  if (auth.isSuperAdmin) return "超级管理员";
+  if (auth.user?.role === "tenant_admin" || auth.isAdmin) return "管理者";
   return "普通用户";
 });
 

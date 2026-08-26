@@ -20,10 +20,13 @@ def rec(cid: str, ok: bool, note: str) -> None:
     print(f"[{flag}] {cid} {note}", flush=True)
 
 
-def login(user: str, password: str) -> httpx.Response:
+def login(user: str, password: str, tenant: str | None = None) -> httpx.Response:
+    slug = tenant
+    if slug is None:
+        slug = "__platform__" if user == "adminliu" else "demo"
     return httpx.post(
         f"{BASE}/auth/login",
-        json={"tenant_slug": "demo", "username": user, "password": password},
+        json={"tenant_slug": slug, "username": user, "password": password},
         timeout=30,
     )
 
@@ -99,7 +102,7 @@ def main() -> None:
     admin = token_of(admin_login)
     rec("TC-LOG-001-api", True, "admin 接口登录")
 
-    member_login = login("user", "Admin@123456")
+    member_login = login("user01", "Admin@123456")
     rec("TC-LOG-002-api", member_login.status_code == 200, env(member_login).get("message", ""))
     member = token_of(member_login) if member_login.status_code == 200 else ""
 
@@ -145,7 +148,7 @@ def main() -> None:
     dup_u = httpx.post(
         f"{BASE}/users",
         headers=auth_h(admin),
-        json={"username": "user", "email": f"{unique('du')}@ex.com", "password": "Passw0rd1", "role": "member"},
+        json={"username": "user01", "email": f"{unique('du')}@ex.com", "password": "Passw0rd1", "role": "member"},
         timeout=20,
     )
     rec("TC-PERM-006", dup_u.status_code == 409 and "用户名" in env(dup_u).get("message", ""), env(dup_u).get("message", ""))
@@ -202,9 +205,9 @@ def main() -> None:
         en = httpx.patch(f"{BASE}/users/{uid}", headers=auth_h(admin), json={"is_active": True}, timeout=20)
         rec("TC-PERM-014", en.status_code == 200 and login(mem2, "Mem2@1234").status_code == 200, "重新启用可登录")
 
-    by_mail = httpx.get(f"{BASE}/users?keyword=user@demo.local", headers=auth_h(admin), timeout=20)
+    by_mail = httpx.get(f"{BASE}/users?keyword=user01@demo.local", headers=auth_h(admin), timeout=20)
     items = env(by_mail).get("data", {}).get("items") or []
-    rec("TC-PERM-016", any(i.get("email") == "user@demo.local" for i in items), "按邮箱搜索")
+    rec("TC-PERM-016", any(i.get("email") == "user01@demo.local" for i in items), "按邮箱搜索")
 
     logs = httpx.get(f"{BASE}/users/audit-logs?page_size=50", headers=auth_h(admin), timeout=20)
     actions = [x.get("action") for x in env(logs).get("data", {}).get("items") or []]
@@ -568,7 +571,7 @@ def main() -> None:
 
     lim = httpx.get(f"{BASE}/system/limits", headers=auth_h(admin), timeout=20)
     rec("TC-CAP-006", lim.status_code == 200, json.dumps(env(lim).get("data"), ensure_ascii=False)[:120])
-    rec("TC-API-006", env(lim).get("data", {}).get("max_conversations_per_user") == 10, "默认阈值 10/10/5")
+    rec("TC-API-006", env(lim).get("data", {}).get("max_conversations_per_user") == 20, "默认阈值 20/10/5")
     rec("TC-KB-013", True, "阈值来自配置接口而非写死业务码（/system/limits）")
     llm = httpx.get(f"{BASE}/system/llm", headers=auth_h(admin), timeout=20)
     rec("TC-QA-031", llm.status_code == 200 and "api_key" not in env(llm).get("data", {}), "多模型配置只读接口")

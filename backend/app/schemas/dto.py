@@ -13,13 +13,26 @@ ConvMode = Literal["rag", "agent"]
 
 class UserDTO(BaseModel):
     id: UUID
-    tenant_id: UUID
+    tenant_id: UUID | None = None
     username: str
     email: str
     role: Role
     is_active: bool = True
+    tenant_slug: str | None = None
+    tenant_name: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+class LoginRecordDTO(BaseModel):
+    logged_at: str
+    device_name: str
+
+
+class UserListDTO(UserDTO):
+    last_login_at: str | None = None
+    login_count: int = 0
+    logins: list[LoginRecordDTO] = []
 
 
 class LoginIn(BaseModel):
@@ -46,6 +59,7 @@ class UserCreateIn(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
     role: Role
+    tenant_id: UUID | None = None
 
 
 class UserPatchIn(BaseModel):
@@ -57,6 +71,7 @@ class UserPatchIn(BaseModel):
 class KnowledgeBaseCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=2000)
+    tenant_id: UUID | None = None
 
 
 class KnowledgeBasePatchIn(BaseModel):
@@ -76,6 +91,8 @@ class KnowledgeBaseDTO(BaseModel):
     is_active: bool
     created_by: UUID
     created_at: datetime
+    tenant_slug: str | None = None
+    tenant_name: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -119,9 +136,17 @@ class ConversationCreateIn(BaseModel):
 
 
 class ConversationPatchIn(BaseModel):
-    """改标题或置顶。字段不传表示不改。"""
+    """改标题、置顶或绑定知识库。字段不传表示不改。"""
     title: str | None = Field(default=None, min_length=1, max_length=256)
     is_pinned: bool | None = None
+    knowledge_base_ids: list[UUID] | None = Field(default=None, min_length=1, max_length=20)
+
+    @field_validator("knowledge_base_ids")
+    @classmethod
+    def unique_kb_ids(cls, value: list[UUID] | None) -> list[UUID] | None:
+        if value is not None and len(value) != len(set(value)):
+            raise ValueError("knowledge_base_ids 不能重复")
+        return value
 
 
 class CitationDTO(BaseModel):
@@ -152,6 +177,8 @@ class ConversationDTO(BaseModel):
     is_pinned: bool = False
     owner_username: str = ""
     owner_kind: str = "普通用户"
+    tenant_slug: str | None = None
+    tenant_name: str | None = None
     messages: list[MessageDTO] | None = None
 
 
@@ -160,6 +187,19 @@ class ChatIn(BaseModel):
     conversation_id: UUID
     question: str = Field(min_length=1, max_length=8000)
     stream: bool = True
+
+
+class GenerateDocumentIn(BaseModel):
+    knowledge_base_id: UUID
+    title: str = Field(min_length=1, max_length=200)
+    requirements: str = Field(min_length=1, max_length=8000)
+    stream: bool = True
+
+
+class SaveGeneratedDocumentIn(BaseModel):
+    knowledge_base_id: UUID
+    title: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1, max_length=200000)
 
 
 class FeedbackIn(BaseModel):

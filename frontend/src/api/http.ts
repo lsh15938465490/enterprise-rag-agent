@@ -4,6 +4,7 @@
  */
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from "axios";
 import { ElMessage } from "element-plus";
+import { clearAuthStorage, getAccessToken, getRefreshToken, setAuthTokens } from "./session";
 
 export interface Envelope<T> {
   code: number;
@@ -17,9 +18,23 @@ const http = axios.create({
   timeout: 60000,
 });
 
+/** 切换账号时加 1，作废进行中的 refresh，避免把上一用户的 token 写回来。 */
+let authEpoch = 0;
+
+export function bumpAuthEpoch() {
+  authEpoch += 1;
+}
+
+function isAuthUrl(url?: string) {
+  const u = url || "";
+  return u.includes("/auth/login") || u.includes("/auth/refresh") || u.includes("/auth/logout") || u.includes("/auth/tenants");
+}
+
 http.interceptors.request.use((config) => {
-  // 每个请求自动带上登录令牌
-  const token = localStorage.getItem("access_token");
+  if (isAuthUrl(config.url)) {
+    return config;
+  }
+  const token = getAccessToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -41,11 +56,16 @@ http.interceptors.response.use(
     return res;
   },
   async (err: AxiosError<Envelope<unknown>>) => {
-    // 401：尝试 refresh 一次；失败才踢回登录页
-    const original = err.config as InternalAxiosRequestConfig & { _retry?: boolean };
-    if (err.response?.status === 401 && original && !original._retry) {
+    const original = err.config as InternalAxiosRequestConfig & { _retry?: boolean; _epoch?: number };
+    if (err.response?.status === 401 && original && !original._retry && !isAuthUrl(original.url)) {
       original._retry = true;
-      const refresh = localStorage.getItem("refresh_token");
+      const epochAtFail = authEpoch;
+      const sent = String(original.headers?.Authorization || "");
+      const current = getAccessToken();
+      if (sent && current && sent !== `Bearer ${current}`) {
+        return Promise.reject(err);
+      }
+      const refresh = getRefreshToken();
       if (refresh && !refreshing) {
         refreshing = true;
         try {
@@ -53,16 +73,19 @@ http.interceptors.response.use(
             "/api/v1/auth/refresh",
             { refresh_token: refresh },
           );
+          if (epochAtFail !== authEpoch) {
+            return Promise.reject(err);
+          }
           const data = resp.data.data;
-          localStorage.setItem("access_token", data.access_token);
-          localStorage.setItem("refresh_token", data.refresh_token);
+          setAuthTokens(data.access_token, data.refresh_token);
           original.headers = original.headers || {};
           original.headers.Authorization = `Bearer ${data.access_token}`;
           return http(original);
         } catch {
-          localStorage.removeItem("access_token");
-          localStorage.removeItem("refresh_token");
-          window.location.href = "/login";
+          if (epochAtFail === authEpoch) {
+            clearAuthStorage();
+            window.location.href = "/login";
+          }
         } finally {
           refreshing = false;
         }
@@ -71,7 +94,11 @@ http.interceptors.response.use(
       }
     }
     const msg = err.response?.data?.message || err.message;
-    ElMessage.error(msg);
+    if (msg && !isAuthUrl(original?.url) ) {
+      ElMessage.error(msg);
+    } else if (msg && original?.url?.includes("/auth/login")) {
+      ElMessage.error(msg);
+    }
     return Promise.reject(err);
   },
 );

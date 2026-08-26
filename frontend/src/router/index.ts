@@ -3,6 +3,7 @@
  * public: 不用登录（登录页）；requiresAdmin: 只有管理员能进用户管理。
  */
 import { createRouter, createWebHistory } from "vue-router";
+import { getAccessToken } from "../api/session";
 import { useAuthStore } from "../stores/auth";
 
 const router = createRouter({
@@ -19,6 +20,7 @@ const router = createRouter({
         { path: "kbs", name: "kbs", component: () => import("../views/KnowledgeBases.vue") },
         { path: "kbs/:id/docs", name: "docs", component: () => import("../views/Documents.vue") },
         { path: "history", name: "history", component: () => import("../views/History.vue") },
+        { path: "stats", name: "upload-stats", component: () => import("../views/UploadStats.vue"), meta: { requiresAdmin: true } },
         {
           path: "admin/users",
           name: "admin-users",
@@ -32,13 +34,13 @@ const router = createRouter({
 
 // 每次跳转前检查：没 token 去登录；过期就清会话；非管理员不能进后台。
 router.beforeEach(async (to) => {
-  const token = localStorage.getItem("access_token");
+  const token = getAccessToken();
   const auth = useAuthStore();
   if (!to.meta.public && !token) {
     return { path: "/login", query: { redirect: to.fullPath } };
   }
-  if (to.path === "/login" && token) {
-    return { path: "/chat" };
+  if (to.path === "/login") {
+    return true;
   }
   if (token && !auth.user) {
     try {

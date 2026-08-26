@@ -14,7 +14,7 @@
       class="tool"
     />
     <StreamMarkdown v-if="role === 'assistant'" :content="content" />
-    <div v-else class="user-body">{{ content }}</div>
+    <div v-else class="user-body">{{ displayText }}</div>
     <SourceCard
       v-for="c in citations"
       :key="c.chunk_id"
@@ -31,6 +31,7 @@
 import { computed } from "vue";
 import SourceCard from "./SourceCard.vue";
 import StreamMarkdown from "./StreamMarkdown.vue";
+import { displayQuestion } from "../utils/questionText";
 
 export interface Citation {
   chunk_id: string;
@@ -59,6 +60,9 @@ const props = defineProps<{
 const citations = computed(() => props.citations || []);
 const tools = computed(() => props.tools || []);
 const processLogs = computed(() => (props.streaming ? tools.value : []));
+const displayText = computed(() =>
+  props.role === "user" ? displayQuestion(props.content) : props.content,
+);
 const label = computed(() => {
   if (props.role === "user") return "我";
   if (props.role === "assistant") return "助手";

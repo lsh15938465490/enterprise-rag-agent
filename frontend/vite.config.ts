@@ -12,6 +12,15 @@ export default defineConfig({
       "/api": {
         target: proxyTarget,
         changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on("proxyRes", (proxyRes) => {
+            const ct = String(proxyRes.headers["content-type"] || "");
+            if (ct.includes("text/event-stream")) {
+              proxyRes.headers["cache-control"] = "no-cache, no-transform";
+              proxyRes.headers["x-accel-buffering"] = "no";
+            }
+          });
+        },
       },
     },
   },

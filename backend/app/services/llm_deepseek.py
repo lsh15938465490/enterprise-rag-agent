@@ -77,7 +77,9 @@ async def complete_chat(messages: list[dict], temperature: float = 0.2) -> str:
         return data["choices"][0]["message"]["content"] or ""
 
 
-async def stream_chat(messages: list[dict], temperature: float = 0.3) -> AsyncIterator[str]:
+async def stream_chat(
+    messages: list[dict], temperature: float = 0.3, max_tokens: int = 2048
+) -> AsyncIterator[str]:
     """流式吐字。解析 SSE 失败的行会跳过，不中断整次回答。"""
     if not settings.llm_api_key:
         async for token in _offline_answer(messages):
@@ -87,10 +89,11 @@ async def stream_chat(messages: list[dict], temperature: float = 0.3) -> AsyncIt
         "model": settings.llm_model,
         "messages": messages,
         "temperature": temperature,
-        "max_tokens": 2048,
+        "max_tokens": max_tokens,
         "stream": True,
     }
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    timeout = 180.0 if max_tokens > 2048 else 60.0
+    async with httpx.AsyncClient(timeout=timeout) as client:
         async with client.stream("POST", _url(), headers=_headers(), json=payload) as resp:
             if resp.status_code >= 400:
                 raise RuntimeError("模型服务不可用")
@@ -141,7 +144,14 @@ def _offline_react(messages: list[dict]) -> str:
 async def _offline_answer(messages: list[dict]) -> AsyncIterator[str]:
     """没 Key 时的占位回答，逐字 yield 以模拟流式。"""
     user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-    if "未覆盖" in user or ("【检索结果】" in user and len(user) < 40):
+    if "文档标题" in user and "内容要求" in user:
+        text = (
+            "# 文档概述\n\n当前未配置大模型密钥，这是离线占位初稿，请人工核对后保存。\n\n"
+            "## 核心章节\n\n请根据内容要求补充制度与流程细节。\n\n"
+            "## 具体要点\n\n- 待补充\n\n"
+            "## 引用来源\n\n当前知识库检索片段见上文编号，或标明暂无参考片段。\n"
+        )
+    elif "未覆盖" in user or ("【检索结果】" in user and len(user) < 40):
         text = "当前知识库未覆盖该问题。"
     else:
         text = "根据检索结果：[S1] 请结合来源卡片中的原文理解。当前未配置大模型密钥，这是离线占位回答。"

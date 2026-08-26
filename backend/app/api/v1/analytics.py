@@ -1,15 +1,19 @@
 """行为埋点写入与汇总查询。无前端看板。"""
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.helpers import ok, page_data
-from app.core.deps import get_current_user
-from app.db.models import AnalyticsEvent, User
+from app.core.deps import get_current_user, require_roles
+from app.core.exceptions import AppError
+from app.db.models import AnalyticsEvent, User, UserRole
 from app.db.session import get_db
 from app.schemas.dto import AnalyticsEventIn
-from app.services.analytics import record_event, summary_for_tenant
+from app.services.acl import is_super_admin
+from app.services.analytics import record_event, summary_for_tenant, upload_dashboard
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -67,6 +71,25 @@ async def list_events(
         for r in rows
     ]
     return ok(request, page_data(items, total, page, page_size))
+
+
+@router.get("/uploads")
+async def upload_stats(
+    request: Request,
+    tenant_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.tenant_admin)),
+):
+    """上传统计页：文档与新建会话存量、今日、近 7 天。超级管理员可按 tenant_id 筛选。"""
+    scope = None
+    if tenant_id:
+        if not is_super_admin(user):
+            raise AppError(40003, "无权限", 403)
+        try:
+            scope = UUID(tenant_id)
+        except ValueError:
+            raise AppError(40022, "租户无效", 422)
+    return ok(request, await upload_dashboard(db, user, scope))
 
 
 @router.get("/summary")

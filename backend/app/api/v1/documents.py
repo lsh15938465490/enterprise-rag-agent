@@ -16,7 +16,9 @@ from app.core.limits import max_documents_per_kb
 from app.db.models import Document, DocStatus, User
 from app.db.session import get_db
 from app.schemas.dto import DocumentDTO
-from app.services.acl import get_kb, require_read, require_write
+from app.services.acl import get_kb, is_super_admin, require_read, require_write
+from app.services.file_kind import assert_kind_matches_name
+from app.services.doc_ingest_preview import ingest_preview
 from app.services.document_pipeline import process_document
 from app.services.qdrant_store import delete_by_document
 from app.services.storage import abs_path, delete_file, save_bytes
@@ -24,7 +26,12 @@ from app.workers.tasks import parse_document as parse_task
 
 router = APIRouter(tags=["documents"])
 
-ALLOWED_EXT = {".pdf", ".docx", ".txt", ".md"}
+_CONTENT_TYPE = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+}
 
 
 def _dto(doc: Document) -> dict:
@@ -40,8 +47,14 @@ async def _enqueue(doc_id: UUID) -> None:
     parse_task.delay(str(doc_id))
 
 
-def _suffix(filename: str) -> str:
-    return ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+async def _get_doc(db: AsyncSession, doc_id: UUID, user: User) -> Document:
+    stmt = select(Document).where(Document.id == doc_id)
+    if not is_super_admin(user):
+        stmt = stmt.where(Document.tenant_id == user.tenant_id)
+    doc = await db.scalar(stmt)
+    if doc is None:
+        raise AppError(40004, "资源不存在", 404)
+    return doc
 
 
 async def _persist_upload(
@@ -53,8 +66,7 @@ async def _persist_upload(
     content_type: str,
     data: bytes,
 ) -> Document:
-    if _suffix(filename) not in ALLOWED_EXT:
-        raise AppError(40022, "不支持的文件类型", 422)
+    ext = assert_kind_matches_name(filename, data)
     dup = await db.scalar(
         select(Document.id).where(Document.knowledge_base_id == kb.id, Document.filename == filename)
     )
@@ -64,14 +76,14 @@ async def _persist_upload(
     if len(data) > max_bytes:
         raise AppError(40022, "文件超过大小限制", 422)
     doc_id = uuid4()
-    storage_key, checksum = save_bytes(str(user.tenant_id), str(kb.id), str(doc_id), filename, data)
+    storage_key, checksum = save_bytes(str(kb.tenant_id), str(kb.id), str(doc_id), filename, data)
     doc = Document(
         id=doc_id,
-        tenant_id=user.tenant_id,
+        tenant_id=kb.tenant_id,
         knowledge_base_id=kb.id,
         uploaded_by=user.id,
         filename=filename,
-        content_type=content_type or "application/octet-stream",
+        content_type=_CONTENT_TYPE.get(ext, content_type or "application/octet-stream"),
         file_size=len(data),
         storage_key=storage_key,
         status=DocStatus.uploaded,
@@ -93,7 +105,7 @@ async def list_docs(
     user: User = Depends(get_current_user),
 ):
     """列出某知识库下的文档，可按状态过滤。"""
-    kb = await get_kb(db, kb_id, user.tenant_id)
+    kb = await get_kb(db, kb_id, user)
     await require_read(db, user, kb)
     stmt = select(Document).where(Document.knowledge_base_id == kb.id)
     count_stmt = select(func.count()).select_from(Document).where(Document.knowledge_base_id == kb.id)
@@ -115,11 +127,9 @@ async def upload_doc(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    kb = await get_kb(db, kb_id, user.tenant_id)
+    kb = await get_kb(db, kb_id, user)
     await require_write(db, user, kb)
     filename = file.filename or "file"
-    if _suffix(filename) not in ALLOWED_EXT:
-        raise AppError(40022, "不支持的文件类型", 422)
     data = await file.read()
     max_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
     if len(data) > max_bytes:
@@ -152,7 +162,7 @@ async def upload_docs_batch(
     user: User = Depends(get_current_user),
 ):
     """批量上传（无前端批量页）。全部校验通过后写入，超限整批拒绝。"""
-    kb = await get_kb(db, kb_id, user.tenant_id)
+    kb = await get_kb(db, kb_id, user)
     await require_write(db, user, kb)
     if not files:
         raise AppError(40022, "请至少选择一个文件", 422)
@@ -193,12 +203,26 @@ async def get_doc(
     user: User = Depends(get_current_user),
 ):
     """单份文档的状态（解析进度、失败原因）。"""
-    doc = await db.scalar(select(Document).where(Document.id == doc_id, Document.tenant_id == user.tenant_id))
-    if doc is None:
-        raise AppError(40004, "资源不存在", 404)
-    kb = await get_kb(db, doc.knowledge_base_id, user.tenant_id)
+    doc = await _get_doc(db, doc_id, user)
+    kb = await get_kb(db, doc.knowledge_base_id, user)
     await require_read(db, user, kb)
     return ok(request, _dto(doc))
+
+
+@router.get("/documents/{doc_id}/ingest-preview")
+async def get_ingest_preview(
+    request: Request,
+    doc_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """解析完成后：切块数、Agent 生成的 3 个示例问题、召回偏低提示。"""
+    doc = await _get_doc(db, doc_id, user)
+    kb = await get_kb(db, doc.knowledge_base_id, user)
+    await require_read(db, user, kb)
+    if doc.status != DocStatus.ready:
+        raise AppError(40022, "文档仍在解析，完成后才能查看切块和示例问题", 422)
+    return ok(request, await ingest_preview(db, doc))
 
 
 @router.get("/documents/{doc_id}/file")
@@ -208,10 +232,8 @@ async def download_doc(
     user: User = Depends(get_current_user),
 ):
     """下载原始文件。"""
-    doc = await db.scalar(select(Document).where(Document.id == doc_id, Document.tenant_id == user.tenant_id))
-    if doc is None:
-        raise AppError(40004, "资源不存在", 404)
-    kb = await get_kb(db, doc.knowledge_base_id, user.tenant_id)
+    doc = await _get_doc(db, doc_id, user)
+    kb = await get_kb(db, doc.knowledge_base_id, user)
     await require_read(db, user, kb)
     path = abs_path(doc.storage_key)
     if not path.exists():
@@ -227,10 +249,8 @@ async def reprocess(
     user: User = Depends(get_current_user),
 ):
     """解析失败或改了算法后，重新走切块+向量化。"""
-    doc = await db.scalar(select(Document).where(Document.id == doc_id, Document.tenant_id == user.tenant_id))
-    if doc is None:
-        raise AppError(40004, "资源不存在", 404)
-    kb = await get_kb(db, doc.knowledge_base_id, user.tenant_id)
+    doc = await _get_doc(db, doc_id, user)
+    kb = await get_kb(db, doc.knowledge_base_id, user)
     await require_write(db, user, kb)
     doc.status = DocStatus.uploaded
     doc.error_message = None
@@ -247,10 +267,8 @@ async def delete_doc(
     user: User = Depends(get_current_user),
 ):
     """删库记录、磁盘文件和向量点。"""
-    doc = await db.scalar(select(Document).where(Document.id == doc_id, Document.tenant_id == user.tenant_id))
-    if doc is None:
-        raise AppError(40004, "资源不存在", 404)
-    kb = await get_kb(db, doc.knowledge_base_id, user.tenant_id)
+    doc = await _get_doc(db, doc_id, user)
+    kb = await get_kb(db, doc.knowledge_base_id, user)
     await require_write(db, user, kb)
     await delete_by_document(kb.qdrant_collection, doc.id)
     delete_file(doc.storage_key)

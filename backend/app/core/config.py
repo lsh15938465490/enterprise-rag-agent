@@ -48,7 +48,7 @@ class Settings(BaseSettings):
 
     UPLOAD_DIR: str = "./data/uploads"
     MAX_UPLOAD_MB: int = 50
-    MAX_CONVERSATIONS_PER_USER: int = 10
+    MAX_CONVERSATIONS_PER_USER: int = 20
     MAX_KNOWLEDGE_BASES_PER_TENANT: int = 10
     MAX_DOCUMENTS_PER_KB: int = 5
     LOGIN_MAX_FAILED_ATTEMPTS: int = 5

@@ -3,6 +3,8 @@
 from app.core.config import settings
 
 SUPER_ADMIN_USERNAME = "adminliu"
+# adminliu 登录不校验部门；平台知识库仍用该 slug。
+PLATFORM_TENANT_SLUG = "__platform__"
 
 
 def max_conversations_per_user() -> int:

@@ -1,17 +1,17 @@
 """会话列表、新建会话、消息记录。一个会话必须先勾选知识库。"""
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import delete, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.helpers import ok, page_data
 from app.core.deps import get_current_user
 from app.core.exceptions import AppError
-from app.core.limits import max_conversations_per_user
+from app.core.limits import SUPER_ADMIN_USERNAME, max_conversations_per_user
 from app.db.models import (
     Chunk,
     Conversation,
@@ -24,15 +24,18 @@ from app.db.models import (
     MessageCitation,
     MessageFeedback,
     MessageRole,
+    Tenant,
     User,
     UserRole,
 )
 from app.db.session import get_db
 from app.schemas.dto import ConversationCreateIn, ConversationDTO, ConversationPatchIn, FeedbackIn, MessageDTO
-from app.services.acl import is_tenant_admin, require_read_many
+from app.services.acl import filter_active_kb_ids, is_super_admin, require_read_many
 from app.services.suggest_questions import suggest_questions
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
+CHAT_RECENT_LIMIT = 10
+CHAT_ACTIVE_DAYS = 7
 
 
 async def _kb_ids_map(db: AsyncSession, conv_ids: list[UUID]) -> dict[UUID, list[UUID]]:
@@ -106,23 +109,53 @@ async def _citations_for(db: AsyncSession, message_id: UUID) -> list[dict]:
 def _owner_kind(role: UserRole) -> str:
     """列表标签：管理者新建 vs 普通用户新建。"""
     if role in {UserRole.super_admin, UserRole.tenant_admin}:
-        return "最高管理者" if role == UserRole.super_admin else "管理者"
+        return "超级管理员" if role == UserRole.super_admin else "管理者"
     return "普通用户"
 
 
+def _staff_user_ids():
+    """管理者与超级管理员（不含普通用户、知识库编辑）。"""
+    return select(User.id).where(User.role.in_((UserRole.super_admin, UserRole.tenant_admin)))
+
+
+def _dept_admin_ids(tenant_id: UUID):
+    """本部门管理者账号（不含普通用户、不含超级管理员）。"""
+    return select(User.id).where(
+        User.tenant_id == tenant_id,
+        User.role == UserRole.tenant_admin,
+        User.username != SUPER_ADMIN_USERNAME,
+    )
+
+
 def _conv_scope(user: User):
-    """管理者看本租户全部会话；普通用户只看自己建的。"""
-    if is_tenant_admin(user):
-        return (Conversation.tenant_id == user.tenant_id,)
+    """普通用户的会话仅自己可见；管理者看本部门管理者会话；超级管理员看所有管理者会话。"""
+    if is_super_admin(user):
+        return (Conversation.user_id.in_(_staff_user_ids()),)
+    if user.role == UserRole.tenant_admin and user.tenant_id is not None:
+        return (
+            Conversation.tenant_id == user.tenant_id,
+            Conversation.user_id.in_(_dept_admin_ids(user.tenant_id)),
+        )
     return (Conversation.user_id == user.id, Conversation.tenant_id == user.tenant_id)
 
 
 async def _get_visible_conv(db: AsyncSession, conv_id: UUID, user: User) -> Conversation:
-    """取会话。普通用户不能打开别人的；不存在和没权限都回 404。"""
-    conv = await db.scalar(
-        select(Conversation).where(Conversation.id == conv_id, Conversation.tenant_id == user.tenant_id)
-    )
-    if conv is None or (not is_tenant_admin(user) and conv.user_id != user.id):
+    """取会话。普通用户会话不能被管理者或超级管理员打开。"""
+    stmt = select(Conversation).where(Conversation.id == conv_id)
+    if is_super_admin(user):
+        conv = await db.scalar(stmt.where(Conversation.user_id.in_(_staff_user_ids())))
+    elif user.role == UserRole.tenant_admin and user.tenant_id is not None:
+        conv = await db.scalar(
+            stmt.where(
+                Conversation.tenant_id == user.tenant_id,
+                Conversation.user_id.in_(_dept_admin_ids(user.tenant_id)),
+            )
+        )
+    else:
+        conv = await db.scalar(
+            stmt.where(Conversation.user_id == user.id, Conversation.tenant_id == user.tenant_id)
+        )
+    if conv is None:
         raise AppError(40004, "资源不存在", 404)
     return conv
 
@@ -135,13 +168,43 @@ async def _owners_map(db: AsyncSession, user_ids: list[UUID]) -> dict[UUID, User
     return {u.id: u for u in rows}
 
 
+async def _tenants_map(db: AsyncSession, tenant_ids: list[UUID]) -> dict[UUID, Tenant]:
+    ids = [tid for tid in tenant_ids if tid]
+    if not ids:
+        return {}
+    rows = (await db.scalars(select(Tenant).where(Tenant.id.in_(ids)))).all()
+    return {t.id: t for t in rows}
+
+
+async def _tenants_for_owners(db: AsyncSession, owners: dict[UUID, User] | list[User | None]) -> dict[UUID, Tenant]:
+    users = owners.values() if isinstance(owners, dict) else owners
+    return await _tenants_map(db, [u.tenant_id for u in users if u is not None])
+
+
+def _owner_tenant(owner: User | None, tenants: dict[UUID, Tenant]) -> Tenant | None:
+    if owner is None or owner.tenant_id is None:
+        return None
+    return tenants.get(owner.tenant_id)
+
+
+def _account_tenant_fields(owner: User | None, tenant: Tenant | None) -> tuple[str | None, str | None]:
+    """创建人账号所属租户；超级管理员不属于任何部门。"""
+    if tenant:
+        return tenant.slug, tenant.name
+    if owner is not None and owner.tenant_id is None:
+        return None, "超级管理员"
+    return None, None
+
+
 def _conv_dto(
     conv: Conversation,
     knowledge_base_ids: list[UUID],
     messages: list[dict] | None = None,
     owner: User | None = None,
+    tenant: Tenant | None = None,
 ) -> dict:
-    """会话转 JSON。列表和详情共用，避免漏字段。"""
+    """会话转 JSON。列表和详情共用，避免漏字段。tenant 为创建人账号所属租户。"""
+    tenant_slug, tenant_name = _account_tenant_fields(owner, tenant)
     return ConversationDTO(
         id=conv.id,
         title=conv.title,
@@ -152,6 +215,8 @@ def _conv_dto(
         is_pinned=conv.is_pinned,
         owner_username=owner.username if owner else "",
         owner_kind=_owner_kind(owner.role) if owner else "普通用户",
+        tenant_slug=tenant_slug,
+        tenant_name=tenant_name,
         messages=messages,
     ).model_dump(mode="json")
 
@@ -160,30 +225,46 @@ def _conv_dto(
 async def list_convs(
     request: Request,
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(20, ge=1, le=200),
+    recent: bool = Query(False, description="智能问答侧栏：只返回最近更新的会话"),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """会话列表。普通用户只看自己的；管理者看本租户全部。"""
+    """会话列表。recent=true 时只返回近 7 天有活动的会话，供问答页侧栏（最多 10 条）。"""
     filt = _conv_scope(user)
     total = int(await db.scalar(select(func.count()).select_from(Conversation).where(*filt)) or 0)
-    rows = (
-        await db.scalars(
-            select(Conversation)
-            .where(*filt)
-            .order_by(
-                Conversation.is_pinned.desc(),
-                Conversation.pinned_at.desc().nulls_last(),
-                Conversation.updated_at.desc(),
-            )
-            .offset((page - 1) * page_size)
-            .limit(page_size)
+    own_total = int(
+        await db.scalar(select(func.count()).select_from(Conversation).where(Conversation.user_id == user.id)) or 0
+    )
+    stmt = select(Conversation).where(*filt)
+    if recent:
+        page = 1
+        page_size = CHAT_RECENT_LIMIT
+        cutoff = datetime.now(timezone.utc) - timedelta(days=CHAT_ACTIVE_DAYS)
+        stmt = stmt.where(Conversation.updated_at >= cutoff).order_by(Conversation.updated_at.desc())
+    else:
+        stmt = stmt.order_by(
+            Conversation.is_pinned.desc(),
+            Conversation.pinned_at.desc().nulls_last(),
+            Conversation.updated_at.desc(),
         )
-    ).all()
+    rows = (await db.scalars(stmt.offset((page - 1) * page_size).limit(page_size))).all()
     kb_map = await _kb_ids_map(db, [c.id for c in rows])
     owners = await _owners_map(db, [c.user_id for c in rows])
-    items = [_conv_dto(conv, kb_map.get(conv.id, []), owner=owners.get(conv.user_id)) for conv in rows]
-    return ok(request, page_data(items, total, page, page_size))
+    tenants = await _tenants_for_owners(db, owners)
+    items = [
+        _conv_dto(
+            conv,
+            kb_map.get(conv.id, []),
+            owner=owners.get(conv.user_id),
+            tenant=_owner_tenant(owners.get(conv.user_id), tenants),
+        )
+        for conv in rows
+    ]
+    payload = page_data(items, total, page, page_size)
+    payload["own_total"] = own_total
+    payload["max_conversations"] = max_conversations_per_user()
+    return ok(request, payload)
 
 
 @router.post("")
@@ -194,30 +275,30 @@ async def create_conv(
     user: User = Depends(get_current_user),
 ):
     """新建会话：知识库必须存在、未停用，且当前用户可读。"""
-    kbs = (
-        await db.scalars(
-            select(KnowledgeBase).where(
-                KnowledgeBase.id.in_(body.knowledge_base_ids),
-                KnowledgeBase.tenant_id == user.tenant_id,
-                KnowledgeBase.is_active.is_(True),
-            )
-        )
-    ).all()
+    stmt = select(KnowledgeBase).where(
+        KnowledgeBase.id.in_(body.knowledge_base_ids),
+        KnowledgeBase.is_active.is_(True),
+    )
+    if not is_super_admin(user):
+        stmt = stmt.where(KnowledgeBase.tenant_id == user.tenant_id)
+    kbs = (await db.scalars(stmt)).all()
     if len(kbs) != len(body.knowledge_base_ids):
         raise AppError(40004, "知识库不存在或已停用", 404)
     await require_read_many(db, user, list(kbs))
+    tenant_ids = {kb.tenant_id for kb in kbs}
+    if len(tenant_ids) != 1:
+        raise AppError(40022, "一次只能选择同一部门的知识库", 422)
+    conv_tenant_id = next(iter(tenant_ids))
     conv_count = int(
         await db.scalar(
-            select(func.count())
-            .select_from(Conversation)
-            .where(Conversation.user_id == user.id, Conversation.tenant_id == user.tenant_id)
+            select(func.count()).select_from(Conversation).where(Conversation.user_id == user.id)
         )
         or 0
     )
     if conv_count >= max_conversations_per_user():
         raise AppError(40022, f"新对话最多 {max_conversations_per_user()} 个，请先删除后再创建", 422)
     conv = Conversation(
-        tenant_id=user.tenant_id,
+        tenant_id=conv_tenant_id,
         user_id=user.id,
         title=body.title or "新对话",
         mode=ConversationMode(body.mode),
@@ -228,7 +309,12 @@ async def create_conv(
         db.add(ConversationKnowledgeBase(conversation_id=conv.id, knowledge_base_id=kb_id))
     await db.commit()
     await db.refresh(conv)
-    return ok(request, _conv_dto(conv, body.knowledge_base_ids, owner=user), 201)
+    tenants = await _tenants_for_owners(db, [user])
+    return ok(
+        request,
+        _conv_dto(conv, body.knowledge_base_ids, owner=user, tenant=_owner_tenant(user, tenants)),
+        201,
+    )
 
 
 @router.get("/search")
@@ -257,7 +343,16 @@ async def search_convs(
     ).all()
     kb_map = await _kb_ids_map(db, [c.id for c in rows])
     owners = await _owners_map(db, [c.user_id for c in rows])
-    items = [_conv_dto(conv, kb_map.get(conv.id, []), owner=owners.get(conv.user_id)) for conv in rows]
+    tenants = await _tenants_for_owners(db, owners)
+    items = [
+        _conv_dto(
+            conv,
+            kb_map.get(conv.id, []),
+            owner=owners.get(conv.user_id),
+            tenant=_owner_tenant(owners.get(conv.user_id), tenants),
+        )
+        for conv in rows
+    ]
     return ok(request, page_data(items, total, page, page_size))
 
 
@@ -284,7 +379,8 @@ async def get_conv(
     ]
     ids = await _kb_ids(db, conv.id)
     owner = (await _owners_map(db, [conv.user_id])).get(conv.user_id)
-    return ok(request, _conv_dto(conv, ids, packed, owner=owner))
+    tenants = await _tenants_for_owners(db, [owner])
+    return ok(request, _conv_dto(conv, ids, packed, owner=owner, tenant=_owner_tenant(owner, tenants)))
 
 
 @router.get("/{conv_id}/export")
@@ -308,10 +404,11 @@ async def export_conv(
     ]
     ids = await _kb_ids(db, conv.id)
     owner = (await _owners_map(db, [conv.user_id])).get(conv.user_id)
+    tenants = await _tenants_for_owners(db, [owner])
     return ok(
         request,
         {
-            "conversation": _conv_dto(conv, ids, owner=owner),
+            "conversation": _conv_dto(conv, ids, owner=owner, tenant=_owner_tenant(owner, tenants)),
             "messages": packed,
         },
     )
@@ -326,8 +423,8 @@ async def suggested_questions(
 ):
     """空会话用：根据绑定知识库已就绪文档，给出最多 3 条引导问题。"""
     conv = await _get_visible_conv(db, conv_id, user)
-    kb_ids = await _kb_ids(db, conv.id)
-    questions = await suggest_questions(db, user.tenant_id, kb_ids)
+    kb_ids = await filter_active_kb_ids(db, await _kb_ids(db, conv.id))
+    questions = await suggest_questions(db, conv.tenant_id, kb_ids)
     return ok(request, {"questions": questions})
 
 
@@ -370,7 +467,7 @@ async def patch_conv(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """改会话标题或置顶。"""
+    """改会话标题、置顶或绑定的知识库。"""
     conv = await _get_visible_conv(db, conv_id, user)
     if body.title is not None:
         conv.title = body.title.strip()
@@ -379,11 +476,26 @@ async def patch_conv(
     if body.is_pinned is not None:
         conv.is_pinned = body.is_pinned
         conv.pinned_at = datetime.now(timezone.utc) if body.is_pinned else None
+    if body.knowledge_base_ids is not None:
+        stmt = select(KnowledgeBase).where(
+            KnowledgeBase.id.in_(body.knowledge_base_ids),
+            KnowledgeBase.is_active.is_(True),
+        )
+        if not is_super_admin(user):
+            stmt = stmt.where(KnowledgeBase.tenant_id == user.tenant_id)
+        kbs = (await db.scalars(stmt)).all()
+        if len(kbs) != len(body.knowledge_base_ids):
+            raise AppError(40004, "知识库不存在或已停用", 404)
+        await require_read_many(db, user, list(kbs))
+        await db.execute(delete(ConversationKnowledgeBase).where(ConversationKnowledgeBase.conversation_id == conv.id))
+        for kb_id in body.knowledge_base_ids:
+            db.add(ConversationKnowledgeBase(conversation_id=conv.id, knowledge_base_id=kb_id))
     await db.commit()
     await db.refresh(conv)
     ids = await _kb_ids(db, conv.id)
     owner = (await _owners_map(db, [conv.user_id])).get(conv.user_id)
-    return ok(request, _conv_dto(conv, ids, owner=owner))
+    tenants = await _tenants_for_owners(db, [owner])
+    return ok(request, _conv_dto(conv, ids, owner=owner, tenant=_owner_tenant(owner, tenants)))
 
 
 @router.delete("/{conv_id}")
@@ -424,7 +536,7 @@ async def put_feedback(
         return ok(request, {"message_id": str(msg.id), "rating": None})
     if row is None:
         row = MessageFeedback(
-            tenant_id=user.tenant_id,
+            tenant_id=conv.tenant_id,
             message_id=msg.id,
             user_id=user.id,
             rating=FeedbackRating(body.rating),

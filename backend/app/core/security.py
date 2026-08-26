@@ -28,7 +28,7 @@ def verify_password(plain: str, password_hash: str) -> bool:
     return bcrypt.checkpw(plain.encode("utf-8"), password_hash.encode("utf-8"))
 
 
-def create_token(user_id: uuid.UUID, tenant_id: uuid.UUID, token_type: TokenType) -> tuple[str, str]:
+def create_token(user_id: uuid.UUID, tenant_id: uuid.UUID | None, token_type: TokenType) -> tuple[str, str]:
     """签发令牌。jti 是令牌身份证，登出时可以拉黑。"""
     now = datetime.now(timezone.utc)
     if token_type == "access":
@@ -38,7 +38,7 @@ def create_token(user_id: uuid.UUID, tenant_id: uuid.UUID, token_type: TokenType
     jti = str(uuid.uuid4())
     payload: dict[str, Any] = {
         "sub": str(user_id),
-        "tenant_id": str(tenant_id),
+        "tenant_id": str(tenant_id) if tenant_id else "",
         "type": token_type,
         "jti": jti,
         "iat": int(now.timestamp()),
