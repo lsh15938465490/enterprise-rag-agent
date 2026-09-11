@@ -202,7 +202,7 @@ const uploading = ref(false);
 const sourceDialog = ref(false);
 const uploadRef = ref<{ clearFiles: () => void } | null>(null);
 const maxDocs = ref(5);
-const maxUploadMb = ref(50);
+const maxUploadMb = ref(10);
 const remainingSlots = computed(() => Math.max(0, maxDocs.value - items.value.length));
 const uploadLimit = computed(() => Math.max(1, remainingSlots.value));
 const ALLOWED_EXT = [".pdf", ".docx", ".txt", ".md"];

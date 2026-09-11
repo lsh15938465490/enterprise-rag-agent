@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     RERANK_MODEL_NAME: str = "BAAI/bge-reranker-v2-m3"
 
     UPLOAD_DIR: str = "./data/uploads"
-    MAX_UPLOAD_MB: int = 50
+    MAX_UPLOAD_MB: int = 10
     MAX_CONVERSATIONS_PER_USER: int = 20
     MAX_KNOWLEDGE_BASES_PER_TENANT: int = 10
     MAX_DOCUMENTS_PER_KB: int = 5
